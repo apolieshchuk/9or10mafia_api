@@ -1,0 +1,9 @@
+{
+  "name": "9-or-10-mafia",
+  "version": "1.0.0",
+  "description": "",
+  "dependencies": {
+    "express": "^4.19.2",
+    "serverless-http": "^3.2.0"
+  }
+}

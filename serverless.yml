@@ -15,6 +15,10 @@ stages:
 #        secretAccessKey: ${env:ACCOUNT1_AWS_SECRET_ACCESS_KEY}
         dashboard: false
 
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-offline
+
 provider:
   name: aws
   runtime: nodejs20.x

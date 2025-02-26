@@ -63,9 +63,15 @@ app.post("/club", async (req, res, next) => {
 app.get("/clubs", async (req, res, next) => {
     try {
         const { db } = await getMongoDataClient();
-        const clubs = await db.collection('clubs').find({ active: true }).project({ email: 1, name: 1, address: 1 });
+        // const clubs = await db.collection('clubs').find({ active: true }).project({ email: 1, name: 1, address: 1 });
+        const clubsAgg = await db.collection('clubs').aggregate([
+            { $match: { active: true } },
+            { $lookup: { from: 'users', localField: '_id', foreignField: 'clubs', as: 'users' } },
+            { $project: { email: 1, name: 1, address: 1, users: { $size: '$users' } } },
+        ]);
+        const clubs = await clubsAgg.toArray();
         return res.status(200).json({
-            items: await clubs.toArray(),
+            items: clubs,
         });
     } catch (e) {
         console.error(e?.message)
@@ -150,9 +156,20 @@ app.post("/user", async (req, res, next) => {
 app.get("/users", async (req, res, next) => {
     try {
         const { db } = await getMongoDataClient();
-        const users = await db.collection('users').find({ active: true }).project({ name: 1, nickname: 1 });
+        const usersAgg = await db.collection('users').aggregate([
+            { $match: { active: true } },
+            { $lookup: { from: 'clubs', localField: 'clubs', foreignField: '_id', as: 'clubs' } },
+            { $project: { name: 1, nickname: 1, email: 1, 'clubs.active': 1, 'clubs.name': 1, 'clubs._id': 1 } },
+        ]);
+        let users = await usersAgg.toArray();
+        users = users.map(user => {
+            user.clubs = user.clubs.filter(club => club.active);
+            user.clubs = user.clubs.map(club => club.name);
+            user.clubs = user.clubs.join(', ');
+            return user;
+        });
         return res.status(200).json({
-            items: await users.toArray(),
+            items: users,
         });
     } catch (e) {
         console.error(e?.message)

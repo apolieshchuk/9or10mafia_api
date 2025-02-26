@@ -88,6 +88,38 @@ app.post("/club/join", userAuthMiddleware, async (req, res, next) => {
     }
 });
 
+app.post("/club/rating-game", clubAuthMiddleware, async (req, res, next) => {
+    try {
+        const { db } = await getMongoDataClient();
+        const clubId = new ObjectId(req.user._id);
+        const { players, winState, votings } = req.body;
+        const ratingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
+        if (!ratingPeriod) {
+            return res.status(422).json({
+                error: 'Rating period not found',
+            });
+        }
+        const ratingPeriodId = ratingPeriod._id;
+        await db.collection('games')
+            .insertOne({
+                club: clubId,
+                ratingPeriod: ratingPeriodId,
+                players,
+                winState,
+                votings,
+                createdAt: new Date(),
+            });
+        return res.status(200).json({
+            data: 'Success',
+        });
+    } catch (e) {
+        console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    }
+});
+
 app.post("/user", async (req, res, next) => {
     try {
         const { db } = await getMongoDataClient();

@@ -212,11 +212,11 @@ app.get("/user/clubs", userAuthMiddleware, async (req, res, next) => {
 app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
     try {
         const rolesMap = {
-            0: '',
-            1: 'М1',
-            2: 'М2',
-            3: 'Д',
-            4: 'Ш'
+            0: 'Мир',
+            1: 'Маф',
+            2: 'Маф',
+            3: 'Дон',
+            4: 'Шер'
         }
         const { db } = await getMongoDataClient();
         const gamesAgg = await db.collection('games').aggregate([

@@ -250,7 +250,7 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
             return {
                 role: rolesMap[player.role],
                 bestTurnGuess: player.killed === 1 ? `${bestTurnGuess}/3` : '-',
-                winner: winner === 'mafia' ? 'Мафія' : 'Місто',
+                winner: winner === 'mafia' ? 'Маф' : 'Мир',
                 createdAt: game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
                 club: game.club,
                 ratingPeriod: game.ratingPeriod,

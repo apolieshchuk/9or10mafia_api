@@ -1,10 +1,12 @@
 const serverless = require("serverless-http");
 const express = require("express");
 const app = express();
+const cors = require('cors')
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require("bcrypt");
 const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware } = require('./auth.middleware');
 
+app.use(cors())
 app.use(express.json());       // to support JSON-encoded bodies
 app.use(express.urlencoded({ extended: true })); // to support URL-encoded bodies
 // app.use(cors({

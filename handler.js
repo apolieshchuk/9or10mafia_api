@@ -16,32 +16,33 @@ app.use(express.urlencoded({ extended: true })); // to support URL-encoded bodie
 // app.use(cors());
 // let client = null;
 
-const client = new MongoClient(process.env.MONGO_URL);
-let isConnected = false;
-
-const getMongoConnection = async () => {
-    if (!isConnected) {
-        await client.connect();
-        isConnected = true;
-        console.log('Connected to MongoDB');
-    }
-    return client;
-}
+// const client = new MongoClient(process.env.MONGO_URL);
+// let isConnected = false;
+//
+// const getMongoConnection = async () => {
+//     if (!isConnected) {
+//         await client.connect();
+//         isConnected = true;
+//         console.log('Connected to MongoDB');
+//     }
+//     return client;
+// }
 
 const getMongoDataClient = async () => {
-    const client = await getMongoConnection();
+    const client = new MongoClient(process.env.MONGO_URL);
+    await client.connect();
     const db = client.db('mafia9or10');
-    db.collection('clubs').createIndex({ email: 1 }, { unique: true });
-    db.collection('clubs').createIndex({ name: 1 }, { unique: true });
-    db.collection('users').createIndex({ email: 1 }, { unique: true });
+    // db.collection('clubs').createIndex({ email: 1 }, { unique: true });
+    // db.collection('clubs').createIndex({ name: 1 }, { unique: true });
+    // db.collection('users').createIndex({ email: 1 }, { unique: true });
     return { db, client };
 }
 
 app.use('/auth', require('./auth.router'));
 
 app.post("/club", async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const { password } = req.body;
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.collection('clubs').insertOne({ ...req.body, password: hashedPassword, active: true });
@@ -58,12 +59,131 @@ app.post("/club", async (req, res, next) => {
         return res.status(500).json({
             error: 'Server Error',
         });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.post("/club/rating", async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const clubId = new ObjectId(req.body.clubId);
+        const latestRatingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
+        const gamesAgg = await db.collection('games').aggregate([
+            { $match: { club: clubId, ratingPeriod: latestRatingPeriod._id  } },
+            { $addFields: { usersId: { $map: { input: '$players', as: 'player', in: '$$player.id' } } }},
+            { $unwind: '$usersId' },
+            { $match: { 'usersId': { $ne: null } } },
+            { $group: { _id: '$usersId', games: { $push: '$$ROOT' } } },
+            { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+            { $unwind: '$user' },
+            { $project: { games: 1, name: '$user.name', nickname: '$user.nickname' } },
+        ]);
+        let users = await gamesAgg.toArray();
+        const usersStats = {};
+        const defaultTotalStats = {
+            totalGames: 0,
+            citizensWins: 0,
+            mafiaWins: 0,
+        }
+        const [mnthNums, mnthNames] = getLast12Months();
+
+        const totalStats = mnthNums.reduce((acc, monthNum, i) => {
+            const m = { ...defaultTotalStats, name: mnthNames[i] };
+            acc.set(Number(monthNum), m);
+            return acc;
+        }, new Map());
+        const calculatedGamesMap = {}
+        for (let user of users) {
+            const games = user.games;
+            const totalGames = games.length;
+            usersStats[user._id] = {
+                id: user._id,
+                name: user.name,
+                nickname: user.nickname,
+                totalGames,
+                totalWins: 0,
+                mafiaGames: 0,
+                mafiaWins: 0,
+                mafiaWinsRate: 0,
+                citizenGames: 0,
+                citizenWins: 0,
+                citizenWinsRate: 0,
+                sheriffGames: 0,
+                sheriffWins: 0,
+                sheriffWinsRate: 0,
+                donGames: 0,
+                donWins: 0,
+                donWinsRate: 0,
+                points: 0,
+                rating: 0,
+                bestTurn2_3: 0,
+                bestTurn3_3: 0,
+                firsDie: 0,
+            }
+            for (let game of games) {
+                const { points, player, bestTurnGuess, isWinner, winner} = calculateRating(game, user._id);
+                // Total stats
+                const mnth = game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }).split('/')[0];
+                if (!calculatedGamesMap[game._id]) { // ToDO if date < 12 months
+                    const current = totalStats.get(Number(mnth));
+                    const newMnth = {
+                        ...current,
+                        totalGames: current.totalGames + 1,
+                        citizensWins: current.citizensWins + (winner === 'Мир' ? 1 : 0),
+                        mafiaWins: current.mafiaWins + (winner === 'Маф' ? 1 : 0),
+                    };
+                    totalStats.set(Number(mnth), newMnth);
+                   calculatedGamesMap[game._id] = true;
+                }
+
+                usersStats[user._id].points += points;
+                usersStats[user._id].rating = usersStats[user._id].points / usersStats[user._id].totalGames * 100;
+                if (bestTurnGuess === 2) {
+                    usersStats[user._id].bestTurn2_3++;
+                } else if (bestTurnGuess === 3) {
+                    usersStats[user._id].bestTurn3_3++;
+                }
+                usersStats[user._id].totalWins += isWinner ? 1 : 0;
+                usersStats[user._id].totalWinsRate = usersStats[user._id].totalWins / usersStats[user._id].totalGames * 100;
+                if (isMafia(player)) {
+                    usersStats[user._id].mafiaGames++;
+                    usersStats[user._id].mafiaWins += isWinner ? 1 : 0;
+                    usersStats[user._id].mafiaWinsRate = usersStats[user._id].mafiaWins / usersStats[user._id].mafiaGames * 100;
+                } else if (isSheriff(player)) {
+                    usersStats[user._id].sheriffGames++;
+                    usersStats[user._id].sheriffWins += isWinner ? 1 : 0;
+                    usersStats[user._id].sheriffWinsRate = usersStats[user._id].sheriffWins / usersStats[user._id].sheriffGames * 100;
+                } else if (isGood(player)) {
+                    usersStats[user._id].citizenGames++;
+                    usersStats[user._id].citizenWins += isWinner ? 1 : 0;
+                    usersStats[user._id].citizenWinsRate = usersStats[user._id].citizenWins / usersStats[user._id].citizenGames * 100;
+                } else if (isDon(player)) {
+                    usersStats[user._id].donGames++;
+                    usersStats[user._id].donWins += isWinner ? 1 : 0;
+                    usersStats[user._id].donWinsRate = usersStats[user._id].donWins / usersStats[user._id].donGames * 100;
+                }
+                usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;
+            }
+        }
+        const sortByRating = Object.values(usersStats).sort((a, b) => b.rating - a.rating);
+        return res.status(200).json({
+            players: sortByRating.map((player, i) => ({...player, rank: i + 1})),
+            stats: [...totalStats],
+        });
+    } catch (e) {
+        console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.get("/clubs", async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         // const clubs = await db.collection('clubs').find({ active: true }).project({ email: 1, name: 1, address: 1 });
         const clubsAgg = await db.collection('clubs').aggregate([
             { $match: { active: true } },
@@ -76,12 +196,17 @@ app.get("/clubs", async (req, res, next) => {
         });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.post("/club/join", userAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const { clubId } = req.body;
         await db.collection('users').updateOne({ email: req.user.email }, { $addToSet: { clubs: new ObjectId(clubId) } });
         return res.status(200).json({
@@ -92,12 +217,14 @@ app.post("/club/join", userAuthMiddleware, async (req, res, next) => {
         return res.status(500).json({
             error: 'Server Error',
         });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.post("/club/rating-game", clubAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const clubId = new ObjectId(req.user._id);
         const { players, winState, votings } = req.body;
         const ratingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
@@ -111,7 +238,7 @@ app.post("/club/rating-game", clubAuthMiddleware, async (req, res, next) => {
             .insertOne({
                 club: clubId,
                 ratingPeriod: ratingPeriodId,
-                players: players.map(player => ({ ...player, id: new ObjectId(player.id) })),
+                players: players.map(player => ({ ...player, id: player.id && new ObjectId(player.id) })),
                 winState,
                 votings,
                 createdAt: new Date(),
@@ -124,12 +251,14 @@ app.post("/club/rating-game", clubAuthMiddleware, async (req, res, next) => {
         return res.status(500).json({
             error: 'Server Error',
         });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.post("/user", async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const { password } = req.body;
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.collection('users').insertOne({
@@ -151,12 +280,14 @@ app.post("/user", async (req, res, next) => {
         return res.status(500).json({
             error: 'Server Error',
         });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.get("/users", async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const usersAgg = await db.collection('users').aggregate([
             { $match: { active: true } },
             { $lookup: { from: 'clubs', localField: 'clubs', foreignField: '_id', as: 'clubs' } },
@@ -174,12 +305,17 @@ app.get("/users", async (req, res, next) => {
         });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.get("/club/users", clubAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const users = await db.collection('users')
             .find({ clubs: new ObjectId(req.user._id), active: true })
             .project({ name: 1, nickname: 1, email: 1 });
@@ -188,12 +324,17 @@ app.get("/club/users", clubAuthMiddleware, async (req, res, next) => {
         });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.get("/user/clubs", userAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const clubs = await db.collection('users').aggregate([
             { $match: { email: req.user.email, active: true } },
             { $lookup: { from: 'clubs', localField: 'clubs', foreignField: '_id', as: 'clubs' } },
@@ -206,10 +347,16 @@ app.get("/user/clubs", userAuthMiddleware, async (req, res, next) => {
         });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
         const rolesMap = {
             0: 'Мир',
@@ -218,7 +365,6 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
             3: 'Дон',
             4: 'Шер'
         }
-        const { db } = await getMongoDataClient();
         const gamesAgg = await db.collection('games').aggregate([
             { $match: { 'players.id': new ObjectId(req.user._id) } },
             { $lookup: { from: 'clubs', localField: 'club', foreignField: '_id', as: 'club' } },
@@ -231,31 +377,18 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
         let games = await gamesAgg.toArray();
 
         games = games.map(game => {
-            const player = game.players.find(player => player.id.toString() === req.user._id);
-            const mafiaPlayers = [];
-            game.players.forEach((player, i) => {
-                if (player.role === 1 || player.role === 2 || player.role === 3) {
-                    mafiaPlayers.push(i + 1);
-                }
-            });
-            const bestTurnGuess = (player.bestTurn || []).reduce((acc, n) => {
-                if (mafiaPlayers.includes(n)) {
-                    acc++;
-                }
-                return acc
-            }, 0);
-            const winner = game.winState // citizens or mafia
-            const isWinner = winner === 'mafia' && (player.role === 1 || player.role === 2 || player.role === 3);
+            const { points, player, bestTurnGuess, isWinner, winner } = calculateRating(game, req.user._id);
 
             return {
+                id: game._id,
                 role: rolesMap[player.role],
-                bestTurnGuess: player.killed === 1 ? `${bestTurnGuess}/3` : '-',
-                winner: winner === 'mafia' ? 'Маф' : 'Мир',
+                bestTurnGuess: isFirstDie(player) ? `${bestTurnGuess}/3` : '-',
+                winner,
                 createdAt: game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
                 club: game.club,
                 ratingPeriod: game.ratingPeriod,
                 isWinner,
-                rating: (isWinner ? 1 : 0) + (bestTurnGuess === 3 ? 0.7 : bestTurnGuess === 2 ? 0.5 : 0),
+                points,
             }
         });
         return res.status(200).json({
@@ -263,12 +396,17 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
         });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.post("/club/rating-period", clubAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const { name } = req.body;
         await db.collection('rating_periods')
             .insertOne({ name, club: new ObjectId(req.user._id) });
@@ -277,12 +415,17 @@ app.post("/club/rating-period", clubAuthMiddleware, async (req, res, next) => {
         });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
 app.get("/club/rating-periods", allAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
     try {
-        const { db } = await getMongoDataClient();
         const clubs = []
         if (req.user.authType === 'Клуб') {
             clubs.push(new ObjectId(req.user._id));
@@ -308,10 +451,14 @@ app.get("/club/rating-periods", allAuthMiddleware, async (req, res, next) => {
             }
             return ({ ...item, active: false });
         });
-        console.log(`--->`, items, 'handler.js:204')
         return res.status(200).json({ items });
     } catch (e) {
         console.error(e?.message)
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
     }
 });
 
@@ -333,5 +480,88 @@ app.use((req, res, next) => {
         error: "Not Found",
     });
 });
+
+function isFirstDie(player) {
+    return player.killed === 1;
+}
+function isMafia(player) {
+    return player.role === 1 || player.role === 2 || player.role === 3;
+}
+function isDon(player) {
+    return player.role === 3;
+}
+function isSheriff(player) {
+    return player.role === 4;
+}
+function isCitizen(player) {
+    return player.role === 0;
+}
+function isGood(player) {
+    return player.role === 0 || player.role === 4;
+}
+function isWinner(player, game) {
+    return game.winState === 'mafia' ? (player.role === 1 || player.role === 2 || player.role === 3) : (player.role === 0 || player.role === 4);
+}
+
+function getBestTurnGuess(player, mafiaPlayers) {
+    return (player.bestTurn || []).reduce((acc, n) => {
+        if (mafiaPlayers.includes(n)) {
+            acc++;
+        }
+        return acc
+    }, 0);
+}
+
+function getPlayer(game, userId) {
+    return game.players.find(player => player.id?.toString() === String(userId));
+}
+
+function getMafiaPlayers(game) {
+    const mafiaPlayers = [];
+    game.players.forEach((player, i) => {
+        if (isMafia(player)) {
+            mafiaPlayers.push(i + 1);
+        }
+    });
+    return mafiaPlayers;
+}
+
+function calculateRating(game, userId) {
+    const mafiaPlayers = getMafiaPlayers(game);
+    const player = getPlayer(game, userId);
+    const bestTurnGuess = getBestTurnGuess(player, mafiaPlayers);
+    const winner = game.winState === 'mafia' ? 'Маф' : 'Мир';
+    const _isWinner = isWinner(player, game);
+    const points = (_isWinner ? 1 : 0) + (bestTurnGuess === 3 ? 0.7 : bestTurnGuess === 2 ? 0.5 : 0);
+    return { points, mafiaPlayers, player, bestTurnGuess, isWinner: _isWinner, winner };
+}
+
+function getLast12Months() {
+    const monthNames = {
+        1: 'Cіч',
+        2: 'Лют',
+        3: 'Бер',
+        4: 'Кві',
+        5: 'Тра',
+        6: 'Чер',
+        7: 'Лип',
+        8: 'Сер',
+        9: 'Вер',
+        10: 'Жов',
+        11: 'Лис',
+        12: 'Гру',
+    }
+    const nums = [];
+    const names = [];
+    const date = new Date();
+
+    for (let i = 0; i < 12; i++) {
+        names.unshift(monthNames[date.getMonth() + 1]);
+        nums.unshift(date.getMonth() + 1);
+        date.setMonth(date.getMonth() - 1);
+    }
+
+    return [nums, names];
+}
 
 exports.handler = serverless(app);

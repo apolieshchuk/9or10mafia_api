@@ -465,10 +465,7 @@ app.get("/club/rating-periods", allAuthMiddleware, async (req, res, next) => {
 });
 
 app.get("/", async (req, res, next) => {
-    const { db } = await getMongoDataClient();
-    return res.status(200).json({
-        items: await db.collection('users').find({}).toArray(),
-    });
+    return "Hello world!";
 });
 
 app.get("/hello", (req, res, next) => {

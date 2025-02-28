@@ -291,6 +291,11 @@ app.put("/user", userAuthMiddleware, async (req, res, next) => {
     try {
         const userId = new ObjectId(req.user._id);
         const { nickname } = req.body;
+        if (!nickname) {
+            return res.status(422).json({
+                error: 'Nickname is required',
+            });
+        }
         await db.collection('users').updateOne( { _id: userId },{
             nickname
         });

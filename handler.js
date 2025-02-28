@@ -294,6 +294,7 @@ app.get("/users", async (req, res, next) => {
             { $match: { active: true } },
             { $lookup: { from: 'clubs', localField: 'clubs', foreignField: '_id', as: 'clubs' } },
             { $project: { name: 1, nickname: 1, email: 1, 'clubs.active': 1, 'clubs.name': 1, 'clubs._id': 1 } },
+            { $sort: { _id: -1 } },
         ]);
         let users = await usersAgg.toArray();
         users = users.map(user => {

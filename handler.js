@@ -5,6 +5,7 @@ const cors = require('cors')
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require("bcryptjs");
 const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware } = require('./auth.middleware');
+const jwt = require("jsonwebtoken");
 
 app.use(cors())
 app.use(express.json());       // to support JSON-encoded bodies
@@ -304,9 +305,18 @@ app.put("/user", allAuthMiddleware, async (req, res, next) => {
         await db.collection('users').updateOne( { _id: userId },{
             $set: { nickname },
         });
-        return res.status(200).json({
-            data: 'Success',
+
+        const token = jwt.sign({
+            name: req.user.name,
+            email: req.user.email,
+            nickname,
+            clubs: req.user.clubs,
+            authType: req.user.authType
+        }, 'supo-sect-ketyasdzaerfdsd', {
+            expiresIn: '1w',
         });
+
+        res.status(200).json({ token });
     } catch (e) {
         console.error(e?.message)
         if (e?.message?.startsWith('E11000')) {

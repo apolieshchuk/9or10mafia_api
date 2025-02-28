@@ -55,23 +55,4 @@ router.post('/login', async (req, res) => {
     return 'Error';
 });
 
-router.get('/login', async (req, res) => {
-
-  // const { roles, username } = req.auth;
-  // const { url } = req.body;
-  //
-  // if (!url) {
-  //   console.error('url should be specified in body');
-  //   return res.status(400).json({ message: 'url should be specified in body' });
-  // }
-  //
-  // try {
-  //   const qrData = await toolsService.getQR(req.body, username);
-  //   res.send(qrData);
-  // } catch (e) {
-  //   console.error(e);
-  //   res.status(500).json({ error: 'Internal server error' });
-  // }
-})
-
 module.exports = router

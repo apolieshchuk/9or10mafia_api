@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "dependencies": {
-    "bcrypt": "^5.1.1",
+    "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
@@ -12,7 +12,8 @@
   },
   "scripts": {
     "start": "npx serverless offline",
-    "deploy": "serverless deploy"
+    "deploy": "export AWS_PROFILE=mafia9or10 && serverless deploy",
+    "remove": "export AWS_PROFILE=mafia9or10 && serverless remove"
   },
   "devDependencies": {
     "serverless-dotenv-plugin": "^6.0.0",

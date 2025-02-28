@@ -1,7 +1,7 @@
 const express = require('express');
 const {MongoClient} = require("mongodb");
 const router = express.Router();
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const client = new MongoClient(process.env.MONGO_URL);
@@ -19,8 +19,8 @@ const getMongoConnection = async () => {
 const getMongoDataClient = async () => {
     const client = await getMongoConnection();
     const db = client.db('mafia9or10');
-    db.collection('clubs').createIndex({ email: 1 }, { unique: true });
-    db.collection('users').createIndex({ email: 1 }, { unique: true });
+    // db.collection('clubs').createIndex({ email: 1 }, { unique: true });
+    // db.collection('users').createIndex({ email: 1 }, { unique: true });
     return { db, client };
 }
 

@@ -3,6 +3,7 @@
 # "app" enables Serverless Framework Dashboard features and sharing them with other Services.
 app: mafia9or10
 service: mafia9or10
+frameworkVersion: '4.1.5'
 
 stages:
   default:
@@ -22,9 +23,12 @@ plugins:
 provider:
   name: aws
   runtime: nodejs20.x
+  region: us-west-2
 
 functions:
   api:
+    timeout: 30
+    memorySize: 1024
     handler: handler.handler
     events:
       - httpApi: "*"

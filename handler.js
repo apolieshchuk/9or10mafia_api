@@ -3,7 +3,7 @@ const express = require("express");
 const app = express();
 const cors = require('cors')
 const { MongoClient, ObjectId } = require('mongodb');
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware } = require('./auth.middleware');
 
 app.use(cors())

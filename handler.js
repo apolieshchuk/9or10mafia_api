@@ -286,7 +286,7 @@ app.post("/user", async (req, res, next) => {
         await client.close(true);
     }
 });
-app.put("/user", userAuthMiddleware, async (req, res, next) => {
+app.put("/user", allAuthMiddleware, async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {
         const userId = new ObjectId(req.user._id);

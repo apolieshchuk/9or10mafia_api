@@ -290,13 +290,13 @@ app.post("/user", async (req, res, next) => {
 app.put("/user", allAuthMiddleware, async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {
-        const userId = new ObjectId(req.user._id);
-        const { nickname } = req.body;
-        if (!userId) {
+        if (!req.user._id) {
             return res.status(422).json({
                 error: 'User id is required',
             });
         }
+        const userId = new ObjectId(req.user._id);
+        const { nickname } = req.body;
         if (!nickname) {
             return res.status(422).json({
                 error: 'Nickname is required',
@@ -307,6 +307,7 @@ app.put("/user", allAuthMiddleware, async (req, res, next) => {
         });
 
         const token = jwt.sign({
+            _id: req.user._id,
             name: req.user.name,
             email: req.user.email,
             nickname,

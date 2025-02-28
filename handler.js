@@ -286,7 +286,31 @@ app.post("/user", async (req, res, next) => {
         await client.close(true);
     }
 });
-
+app.put("/user", userAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const userId = new ObjectId(req.user._id);
+        const { nickname } = req.body;
+        await db.collection('users').updateOne( { _id: userId },{
+            nickname
+        });
+        return res.status(200).json({
+            data: 'Success',
+        });
+    } catch (e) {
+        console.error(e?.message)
+        if (e?.message?.startsWith('E11000')) {
+            return res.status(409).json({
+                error: 'Duplicate email',
+            });
+        }
+        return res.status(500).json({
+            error: 'Server Error',
+        });
+    } finally {
+        await client.close(true);
+    }
+});
 app.get("/users", async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {

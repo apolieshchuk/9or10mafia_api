@@ -502,6 +502,10 @@ function isWinner(player, game) {
     return game.winState === 'mafia' ? (player.role === 1 || player.role === 2 || player.role === 3) : (player.role === 0 || player.role === 4);
 }
 
+function has4Warnings(player) {
+    return player.warnings === 4;
+}
+
 function getBestTurnGuess(player, mafiaPlayers) {
     return (player.bestTurn || []).reduce((acc, n) => {
         if (mafiaPlayers.includes(n)) {
@@ -531,7 +535,8 @@ function calculateRating(game, userId) {
     const bestTurnGuess = getBestTurnGuess(player, mafiaPlayers);
     const winner = game.winState === 'mafia' ? 'Маф' : 'Мир';
     const _isWinner = isWinner(player, game);
-    const points = (_isWinner ? 1 : 0) + (bestTurnGuess === 3 ? 0.7 : bestTurnGuess === 2 ? 0.5 : 0);
+    const has4Warns = has4Warnings(player);
+    const points = (_isWinner ? 1 : 0) + (bestTurnGuess === 3 ? 0.7 : bestTurnGuess === 2 ? 0.5 : 0) + (has4Warns ? -0.3 : 0);
     return { points, mafiaPlayers, player, bestTurnGuess, isWinner: _isWinner, winner };
 }
 

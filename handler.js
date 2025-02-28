@@ -302,7 +302,7 @@ app.put("/user", allAuthMiddleware, async (req, res, next) => {
             });
         }
         await db.collection('users').updateOne( { _id: userId },{
-            nickname
+            $set: { nickname },
         });
         return res.status(200).json({
             data: 'Success',

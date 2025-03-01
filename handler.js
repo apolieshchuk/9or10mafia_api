@@ -161,7 +161,8 @@ app.post("/club/rating", async (req, res, next) => {
                     usersStats[user._id].citizenGames++;
                     usersStats[user._id].citizenWins += isWinner ? 1 : 0;
                     usersStats[user._id].citizenWinsRate = usersStats[user._id].citizenWins / usersStats[user._id].citizenGames * 100;
-                } else if (isDon(player)) {
+                }
+                if (isDon(player)) {
                     usersStats[user._id].donGames++;
                     usersStats[user._id].donWins += isWinner ? 1 : 0;
                     usersStats[user._id].donWinsRate = usersStats[user._id].donWins / usersStats[user._id].donGames * 100;
@@ -175,6 +176,7 @@ app.post("/club/rating", async (req, res, next) => {
             }
             return b.totalGames - a.totalGames;
         });
+        console.log(`--->`, sortByRating[2], 'handler.js:178')
         return res.status(200).json({
             players: sortByRating.map((player, i) => ({...player, rank: i + 1})),
             stats: [...totalStats],

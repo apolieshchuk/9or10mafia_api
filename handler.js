@@ -169,7 +169,12 @@ app.post("/club/rating", async (req, res, next) => {
                 usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;
             }
         }
-        const sortByRating = Object.values(usersStats).sort((a, b) => b.rating - a.rating);
+        const sortByRating = Object.values(usersStats).sort((a, b) => {
+            if (b.rating !== a.rating) {
+                return b.rating - a.rating
+            }
+            return b.totalGames - a.totalGames;
+        });
         return res.status(200).json({
             players: sortByRating.map((player, i) => ({...player, rank: i + 1})),
             stats: [...totalStats],

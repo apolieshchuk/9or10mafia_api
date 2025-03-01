@@ -153,11 +153,13 @@ app.post("/club/rating", async (req, res, next) => {
                     usersStats[user._id].mafiaGames++;
                     usersStats[user._id].mafiaWins += isWinner ? 1 : 0;
                     usersStats[user._id].mafiaWinsRate = usersStats[user._id].mafiaWins / usersStats[user._id].mafiaGames * 100;
-                } else if (isSheriff(player)) {
+                }
+                if (isSheriff(player)) {
                     usersStats[user._id].sheriffGames++;
                     usersStats[user._id].sheriffWins += isWinner ? 1 : 0;
                     usersStats[user._id].sheriffWinsRate = usersStats[user._id].sheriffWins / usersStats[user._id].sheriffGames * 100;
-                } else if (isGood(player)) {
+                }
+                if (isGood(player)) {
                     usersStats[user._id].citizenGames++;
                     usersStats[user._id].citizenWins += isWinner ? 1 : 0;
                     usersStats[user._id].citizenWinsRate = usersStats[user._id].citizenWins / usersStats[user._id].citizenGames * 100;

@@ -72,7 +72,9 @@ app.post("/club/rating", async (req, res, next) => {
     try {
         const clubId = new ObjectId(req.body.clubId);
         const latestRatingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
-        const gamesAgg = await db.collection('games').aggregate([
+        const [yearStats, periodStats] = await calculateTotalGamesInfo(db, clubId, latestRatingPeriod);
+
+        const users = await db.collection('games').aggregate([
             { $match: { club: clubId, ratingPeriod: latestRatingPeriod._id  } },
             { $addFields: { usersId: { $map: { input: '$players', as: 'player', in: '$$player.id' } } }},
             { $unwind: '$usersId' },
@@ -82,22 +84,11 @@ app.post("/club/rating", async (req, res, next) => {
             { $unwind: '$user' },
             { $project: { games: 1, name: '$user.name', nickname: '$user.nickname' } },
         ]);
-        let users = await gamesAgg.toArray();
-        const usersStats = {};
-        const defaultTotalStats = {
-            totalGames: 0,
-            citizensWins: 0,
-            mafiaWins: 0,
-        }
-        const [mnthNums, mnthNames] = getLast12Months();
 
-        const totalStats = mnthNums.reduce((acc, monthNum, i) => {
-            const m = { ...defaultTotalStats, name: mnthNames[i] };
-            acc.set(Number(monthNum), m);
-            return acc;
-        }, new Map());
-        const calculatedGamesMap = {}
-        for (let user of users) {
+        // Коефіцієнт складної карти
+        const hardRoles = periodStats.citizensWins > periodStats.mafiaWins ? [1, 2, 3] : [0, 4];
+        const usersStats = {};
+        for await (let user of users) {
             const games = user.games;
             const totalGames = games.length;
             usersStats[user._id] = {
@@ -123,25 +114,17 @@ app.post("/club/rating", async (req, res, next) => {
                 bestTurn2_3: 0,
                 bestTurn3_3: 0,
                 firsDie: 0,
+                hardRolesWon: 0,
             }
             for (let game of games) {
                 const { points, player, bestTurnGuess, isWinner, winner} = calculateRating(game, user._id);
-                // Total stats
-                const mnth = game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }).split('/')[0];
-                if (!calculatedGamesMap[game._id]) { // ToDO if date < 12 months
-                    const current = totalStats.get(Number(mnth));
-                    const newMnth = {
-                        ...current,
-                        totalGames: current.totalGames + 1,
-                        citizensWins: current.citizensWins + (winner === 'Мир' ? 1 : 0),
-                        mafiaWins: current.mafiaWins + (winner === 'Маф' ? 1 : 0),
-                    };
-                    totalStats.set(Number(mnth), newMnth);
-                   calculatedGamesMap[game._id] = true;
-                }
-
                 usersStats[user._id].points += points;
                 usersStats[user._id].rating = usersStats[user._id].points / usersStats[user._id].totalGames * 100;
+
+                if (hardRoles.includes(player.role)) {
+                    usersStats[user._id].hardRolesWon += isWinner ? 1 : 0;
+                }
+
                 if (bestTurnGuess === 2) {
                     usersStats[user._id].bestTurn2_3++;
                 } else if (bestTurnGuess === 3) {
@@ -171,17 +154,23 @@ app.post("/club/rating", async (req, res, next) => {
                 }
                 usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;
             }
+
+            // hard roles win rate 1+(((tg/2)-n)/(tg/2)) ToDo!
+            // const hardRolesRate = 1+(((periodStats.totalGames/2) - 0)/(periodStats.totalGames/2))
         }
+
         const sortByRating = Object.values(usersStats).sort((a, b) => {
-            if (b.rating !== a.rating) {
-                return b.rating - a.rating
+            const aRating = a.rating + (a.totalGames > 9 ? 1000 : 0) + (a.totalGames > 19 ? 1000 : 0) + (a.totalGames > 29 ? 1000 : 0);
+            const bRating = b.rating + (b.totalGames > 19 ? 1000 : 0) + (b.totalGames > 29 ? 1000 : 0);
+
+            if (aRating !== bRating) {
+                return bRating - aRating
             }
             return b.totalGames - a.totalGames;
         });
-        console.log(`--->`, sortByRating[2], 'handler.js:178')
         return res.status(200).json({
             players: sortByRating.map((player, i) => ({...player, rank: i + 1})),
-            stats: [...totalStats],
+            stats: [...yearStats],
         });
     } catch (e) {
         console.error(e?.message)
@@ -192,6 +181,44 @@ app.post("/club/rating", async (req, res, next) => {
         await client.close(true);
     }
 });
+
+const calculateTotalGamesInfo = async (db, clubId, latestRatingPeriod) => {
+    // total games info for last 12 months
+    const yearAgo = new Date();
+    yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+    const gamesTotal1Year = await db.collection('games').find({ club: clubId, createdAt: { $gte: yearAgo } })
+    const defaultTotalStats = {
+        totalGames: 0,
+        citizensWins: 0,
+        mafiaWins: 0,
+    }
+    const [mnthNums, mnthNames] = getLast12Months();
+    // calculate games stats
+    const yearStats = mnthNums.reduce((acc, monthNum, i) => {
+        const m = { ...defaultTotalStats, name: mnthNames[i] };
+        acc.set(Number(monthNum), m);
+        return acc;
+    }, new Map());
+    const periodStats = { ...defaultTotalStats };
+    let tgInPeriod = 0;
+    for await (let game of gamesTotal1Year) {
+        const mnth = game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }).split('/')[0];
+        const current = yearStats.get(Number(mnth));
+        const newMnth = {
+            ...current,
+            totalGames: current.totalGames + 1,
+            citizensWins: current.citizensWins + (game.winState === 'mafia' ? 0 : 1),
+            mafiaWins: current.mafiaWins + (game.winState === 'mafia' ? 1 : 0),
+        };
+        yearStats.set(Number(mnth), newMnth);
+        if (String(game.ratingPeriod) === String(latestRatingPeriod._id)) {
+            periodStats.totalGames++;
+            periodStats.citizensWins += game.winState === 'mafia' ? 0 : 1;
+            periodStats.mafiaWins += game.winState === 'mafia' ? 1 : 0;
+        }
+    }
+    return [yearStats, periodStats];
+}
 
 app.get("/clubs", async (req, res, next) => {
     const { db, client } = await getMongoDataClient();

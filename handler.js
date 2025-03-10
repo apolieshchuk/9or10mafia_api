@@ -175,7 +175,10 @@ app.post("/club/rating", async (req, res, next) => {
         });
         return res.status(200).json({
             players: sortByRating.map((player, i) => ({...player, rank: i + 1})),
-            stats: [...yearStats],
+            stats: {
+                yearStats: [...yearStats],
+                avgGames,
+            },
         });
     } catch (e) {
         console.error(e?.message)

@@ -160,13 +160,13 @@ app.post("/club/rating", async (req, res, next) => {
             usersStats[user._id].hardRoleRate = 1+(((periodStats.totalGames/2) - usersStats[user._id].hardRoleGames)/(periodStats.totalGames/2))
         }
 
-        const avgGames = periodStats.totalGames / Object.keys(usersStats).length;
+        const avgGames = Math.floor(periodStats.totalGames / Object.keys(usersStats).length);
 
         const sortByRating = Object.values(usersStats).sort((a, b) => {
             // const aRating = a.rating + (a.totalGames > 9 ? 1000 : 0) + (a.totalGames > 19 ? 1000 : 0) + (a.totalGames > 29 ? 1000 : 0);
             // const bRating = b.rating + (b.totalGames > 19 ? 1000 : 0) + (b.totalGames > 29 ? 1000 : 0);
-            const aRating = a.rating + (a.totalGames > avgGames ? 1000 : 0);
-            const bRating = b.rating + (b.totalGames > avgGames ? 1000 : 0);
+            const aRating = a.rating + (a.totalGames >= avgGames ? 1000 : 0);
+            const bRating = b.rating + (b.totalGames >= avgGames ? 1000 : 0);
 
             if (aRating !== bRating) {
                 return bRating - aRating

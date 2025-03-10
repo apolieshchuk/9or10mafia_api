@@ -114,7 +114,8 @@ app.post("/club/rating", async (req, res, next) => {
                 bestTurn2_3: 0,
                 bestTurn3_3: 0,
                 firsDie: 0,
-                hardRolesWon: 0,
+                hardRoleGames: 0,
+                hardRoleRate: 0,
             }
             for (let game of games) {
                 const { points, player, bestTurnGuess, isWinner, winner} = calculateRating(game, user._id);
@@ -122,7 +123,7 @@ app.post("/club/rating", async (req, res, next) => {
                 usersStats[user._id].rating = usersStats[user._id].points / usersStats[user._id].totalGames * 100;
 
                 if (hardRoles.includes(player.role)) {
-                    usersStats[user._id].hardRolesWon += isWinner ? 1 : 0;
+                    usersStats[user._id].hardRoleGames += 1;
                 }
 
                 if (bestTurnGuess === 2) {
@@ -156,12 +157,16 @@ app.post("/club/rating", async (req, res, next) => {
             }
 
             // hard roles win rate 1+(((tg/2)-n)/(tg/2)) ToDo!
-            // const hardRolesRate = 1+(((periodStats.totalGames/2) - 0)/(periodStats.totalGames/2))
+            usersStats[user._id].hardRoleRate = 1+(((periodStats.totalGames/2) - usersStats[user._id].hardRoleGames)/(periodStats.totalGames/2))
         }
 
+        const avgGames = periodStats.totalGames / Object.keys(usersStats).length;
+
         const sortByRating = Object.values(usersStats).sort((a, b) => {
-            const aRating = a.rating + (a.totalGames > 9 ? 1000 : 0) + (a.totalGames > 19 ? 1000 : 0) + (a.totalGames > 29 ? 1000 : 0);
-            const bRating = b.rating + (b.totalGames > 19 ? 1000 : 0) + (b.totalGames > 29 ? 1000 : 0);
+            // const aRating = a.rating + (a.totalGames > 9 ? 1000 : 0) + (a.totalGames > 19 ? 1000 : 0) + (a.totalGames > 29 ? 1000 : 0);
+            // const bRating = b.rating + (b.totalGames > 19 ? 1000 : 0) + (b.totalGames > 29 ? 1000 : 0);
+            const aRating = a.rating + (a.totalGames > avgGames ? 1000 : 0);
+            const bRating = b.rating + (b.totalGames > avgGames ? 1000 : 0);
 
             if (aRating !== bRating) {
                 return bRating - aRating

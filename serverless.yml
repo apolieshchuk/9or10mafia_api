@@ -10,20 +10,42 @@ stages:
     resolvers:
       aws-account-1:
         type: aws
-        profile: mafia9or10
         region: us-west-2
-#        accessKeyId: ${env:ACCOUNT1_AWS_ACCESS_KEY_ID}
-#        secretAccessKey: ${env:ACCOUNT1_AWS_SECRET_ACCESS_KEY}
+        accessKeyId: ${env:ACCOUNT1_AWS_ACCESS_KEY_ID}
+        secretAccessKey: ${env:ACCOUNT1_AWS_SECRET_ACCESS_KEY}
         dashboard: false
 
 plugins:
   - serverless-dotenv-plugin
   - serverless-offline
 
+package:
+  patterns:
+    - '!node_modules/serverless-offline/**'
+    - '!node_modules/serverless-dotenv-plugin/**'
+    - '!node_modules/java-invoke-local/**'
+    - '!node_modules/@esbuild/**'
+    - '!node_modules/luxon/**'
+    - '!node_modules/@hapi/**'
+    - '!node_modules/velocityjs/**'
+    - '!node_modules/jsonpath-plus/**'
+    - '!node_modules/jszip/**'
+    - '!node_modules/jose/**'
+
 provider:
   name: aws
   runtime: nodejs20.x
   region: us-west-2
+  environment:
+    S3_BUCKET: mafia9or10-avatars
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+          Resource: arn:aws:s3:::mafia9or10-avatars/*
 
 functions:
   api:

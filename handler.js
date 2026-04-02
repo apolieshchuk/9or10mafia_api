@@ -6,9 +6,13 @@ const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require("bcryptjs");
 const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware } = require('./auth.middleware');
 const jwt = require("jsonwebtoken");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+
+const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-west-2' });
+const S3_BUCKET = process.env.S3_BUCKET || 'mafia9or10-avatars';
 
 app.use(cors())
-app.use(express.json());       // to support JSON-encoded bodies
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true })); // to support URL-encoded bodies
 // app.use(cors({
 //   // origin: `https://admin.${process.env.ENV}.usgua.click`,
@@ -82,7 +86,7 @@ app.post("/club/rating", async (req, res, next) => {
             { $group: { _id: '$usersId', games: { $push: '$$ROOT' } } },
             { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
             { $unwind: '$user' },
-            { $project: { games: 1, name: '$user.name', nickname: '$user.nickname' } },
+            { $project: { games: 1, name: '$user.name', nickname: '$user.nickname', avatarUrl: '$user.avatarUrl' } },
         ]);
 
         // Коефіцієнт складної карти
@@ -95,6 +99,7 @@ app.post("/club/rating", async (req, res, next) => {
                 id: user._id,
                 name: user.name,
                 nickname: user.nickname,
+                avatarUrl: user.avatarUrl || '',
                 totalGames,
                 totalWins: 0,
                 mafiaGames: 0,
@@ -305,6 +310,30 @@ app.post("/club/rating-game", clubAuthMiddleware, async (req, res, next) => {
     }
 });
 
+app.get("/club/last-game-players", clubAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const clubId = new ObjectId(req.user._id);
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const lastGame = await db.collection('games').findOne(
+            { club: clubId, createdAt: { $gte: since } },
+            { sort: { createdAt: -1 } }
+        );
+        if (!lastGame) return res.status(200).json({ players: [] });
+
+        const shuffled = (lastGame.players || [])
+            .map(p => ({ title: p.title, id: p.id }))
+            .sort(() => Math.random() - 0.5);
+
+        return res.status(200).json({ players: shuffled });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
 app.post("/user", async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {
@@ -378,6 +407,45 @@ app.put("/user", allAuthMiddleware, async (req, res, next) => {
         await client.close(true);
     }
 });
+
+app.post("/user/avatar", allAuthMiddleware, async (req, res, next) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const { image } = req.body;
+        if (!image) return res.status(422).json({ error: 'Image is required' });
+
+        const matches = image.match(/^data:image\/(jpeg|png|jpg);base64,(.+)$/);
+        if (!matches) return res.status(422).json({ error: 'Invalid image format' });
+
+        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const buffer = Buffer.from(matches[2], 'base64');
+        const key = `avatars/${req.user._id}.${ext}`;
+
+        await s3.send(new PutObjectCommand({
+            Bucket: S3_BUCKET,
+            Key: key,
+            Body: buffer,
+            ContentType: `image/${matches[1]}`,
+        }));
+
+        const avatarUrl = `https://${S3_BUCKET}.s3.amazonaws.com/${key}?t=${Date.now()}`;
+        const userId = new ObjectId(req.user._id);
+        await db.collection('users').updateOne({ _id: userId }, { $set: { avatarUrl } });
+
+        const token = jwt.sign({
+            _id: req.user._id, name: req.user.name, email: req.user.email,
+            nickname: req.user.nickname, clubs: req.user.clubs, authType: req.user.authType, avatarUrl,
+        }, 'supo-sect-ketyasdzaerfdsd', { expiresIn: '1w' });
+
+        res.status(200).json({ token, avatarUrl });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Upload failed' });
+    } finally {
+        await client.close(true);
+    }
+});
+
 app.get("/users", async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {

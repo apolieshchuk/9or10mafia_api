@@ -13,6 +13,7 @@
   },
   "scripts": {
     "start": "npx serverless offline",
+    "check-deploy": "aws cloudformation describe-stacks --stack-name mafia9or10-dev --region us-west-2 --query \"Stacks[0].StackStatus\" --profile mafia9or10",
     "deploy": "export AWS_PROFILE=mafia9or10 && serverless deploy",
     "remove": "export AWS_PROFILE=mafia9or10 && serverless remove"
   },

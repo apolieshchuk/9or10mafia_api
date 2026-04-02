@@ -285,7 +285,7 @@ app.post("/club/rating-game", clubAuthMiddleware, async (req, res, next) => {
             .insertOne({
                 club: clubId,
                 ratingPeriod: ratingPeriodId,
-                players: players.map(player => ({ ...player, id: player.id && new ObjectId(player.id) })),
+                players: players.map(player => ({ ...player, role: normalizeRole(player.role), id: player.id && new ObjectId(player.id) })),
                 winState,
                 votings,
                 createdAt: new Date(),
@@ -467,12 +467,13 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
         let games = await gamesAgg.toArray();
 
         games = games.map(game => {
-            const { points, player, supportFivePoints, isWinner, winner } = calculateRating(game, req.user._id);
+            const { points, player, supportFivePoints, bonus, isWinner, winner } = calculateRating(game, req.user._id);
 
             return {
                 id: game._id,
                 role: rolesMap[player.role],
                 supportFivePoints: isFirstDie(player) ? supportFivePoints : '-',
+                bonus: bonus || '-',
                 winner,
                 createdAt: game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
                 club: game.club,
@@ -634,11 +635,12 @@ function calculateRating(game, userId) {
     const mafiaPlayers = getMafiaPlayers(game);
     const player = getPlayer(game, userId);
     const supportFivePoints = getSupportFivePoints(player, mafiaPlayers);
+    const bonus = player.bonusPoints || 0;
     const winner = game.winState === 'mafia' ? 'Маф' : 'Мир';
     const _isWinner = isWinner(player, game);
     const has4Warns = has4Warnings(player);
-    const points = Math.round(((_isWinner ? 1 : 0) + supportFivePoints + (has4Warns ? -0.3 : 0)) * 100) / 100;
-    return { points, mafiaPlayers, player, supportFivePoints, isWinner: _isWinner, winner };
+    const points = Math.round(((_isWinner ? 1 : 0) + supportFivePoints + bonus + (has4Warns ? -0.3 : 0)) * 100) / 100;
+    return { points, mafiaPlayers, player, supportFivePoints, bonus, isWinner: _isWinner, winner };
 }
 
 function getLast12Months() {

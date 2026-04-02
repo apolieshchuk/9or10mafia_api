@@ -86,7 +86,7 @@ app.post("/club/rating", async (req, res, next) => {
         ]);
 
         // Коефіцієнт складної карти
-        const hardRoles = periodStats.citizensWins > periodStats.mafiaWins ? [1, 2, 3] : [0, 4];
+        const hardRoles = periodStats.citizensWins > periodStats.mafiaWins ? ['maf', 'don'] : ['cit', 'sher'];
         const usersStats = {};
         for await (let user of users) {
             const games = user.games;
@@ -111,25 +111,24 @@ app.post("/club/rating", async (req, res, next) => {
                 donWinsRate: 0,
                 points: 0,
                 rating: 0,
-                bestTurn2_3: 0,
-                bestTurn3_3: 0,
+                supportFivePoints: 0,
+                supportFiveCount: 0,
                 firsDie: 0,
                 hardRoleGames: 0,
                 hardRoleRate: 0,
             }
             for (let game of games) {
-                const { points, player, bestTurnGuess, isWinner, winner} = calculateRating(game, user._id);
+                const { points, player, supportFivePoints, isWinner, winner} = calculateRating(game, user._id);
                 usersStats[user._id].points += points;
                 usersStats[user._id].rating = usersStats[user._id].points / usersStats[user._id].totalGames * 100;
 
-                if (hardRoles.includes(player.role)) {
+                if (hardRoles.includes(normalizeRole(player.role))) {
                     usersStats[user._id].hardRoleGames += 1;
                 }
 
-                if (bestTurnGuess === 2) {
-                    usersStats[user._id].bestTurn2_3++;
-                } else if (bestTurnGuess === 3) {
-                    usersStats[user._id].bestTurn3_3++;
+                if (isFirstDie(player) && (player.bestTurn || []).length > 0) {
+                    usersStats[user._id].supportFivePoints += supportFivePoints;
+                    usersStats[user._id].supportFiveCount++;
                 }
                 usersStats[user._id].totalWins += isWinner ? 1 : 0;
                 usersStats[user._id].totalWinsRate = usersStats[user._id].totalWins / usersStats[user._id].totalGames * 100;
@@ -452,11 +451,9 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {
         const rolesMap = {
-            0: 'Мир',
-            1: 'Маф',
-            2: 'Маф',
-            3: 'Дон',
-            4: 'Шер'
+            cit: 'Мир', maf: 'Маф', don: 'Дон', sher: 'Шер',
+            // backward compatibility with old numeric roles
+            0: 'Мир', 1: 'Маф', 2: 'Маф', 3: 'Дон', 4: 'Шер',
         }
         const gamesAgg = await db.collection('games').aggregate([
             { $match: { 'players.id': new ObjectId(req.user._id) } },
@@ -470,12 +467,12 @@ app.get("/user/games", userAuthMiddleware, async (req, res, next) => {
         let games = await gamesAgg.toArray();
 
         games = games.map(game => {
-            const { points, player, bestTurnGuess, isWinner, winner } = calculateRating(game, req.user._id);
+            const { points, player, supportFivePoints, isWinner, winner } = calculateRating(game, req.user._id);
 
             return {
                 id: game._id,
                 role: rolesMap[player.role],
-                bestTurnGuess: isFirstDie(player) ? `${bestTurnGuess}/3` : '-',
+                supportFivePoints: isFirstDie(player) ? supportFivePoints : '-',
                 winner,
                 createdAt: game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }),
                 club: game.club,
@@ -571,38 +568,51 @@ app.use((req, res, next) => {
     });
 });
 
+// Backward compatibility: convert old numeric roles to new string roles
+function normalizeRole(role) {
+    const legacyMap = { 0: 'cit', 1: 'maf', 2: 'maf', 3: 'don', 4: 'sher' };
+    return typeof role === 'number' ? legacyMap[role] : role;
+}
+
 function isFirstDie(player) {
     return player.killed === 1;
 }
 function isMafia(player) {
-    return player.role === 1 || player.role === 2 || player.role === 3;
+    const role = normalizeRole(player.role);
+    return role === 'maf' || role === 'don';
 }
 function isDon(player) {
-    return player.role === 3;
+    return normalizeRole(player.role) === 'don';
 }
 function isSheriff(player) {
-    return player.role === 4;
+    return normalizeRole(player.role) === 'sher';
 }
 function isCitizen(player) {
-    return player.role === 0;
+    return normalizeRole(player.role) === 'cit';
 }
 function isGood(player) {
-    return player.role === 0 || player.role === 4;
+    const role = normalizeRole(player.role);
+    return role === 'cit' || role === 'sher';
 }
 function isWinner(player, game) {
-    return game.winState === 'mafia' ? (player.role === 1 || player.role === 2 || player.role === 3) : (player.role === 0 || player.role === 4);
+    return game.winState === 'mafia' ? isMafia(player) : isGood(player);
 }
 
 function has4Warnings(player) {
     return player.warnings === 4;
 }
 
-function getBestTurnGuess(player, mafiaPlayers) {
-    return (player.bestTurn || []).reduce((acc, n) => {
-        if (mafiaPlayers.includes(n)) {
-            acc++;
+function getSupportFivePoints(player, mafiaPlayers) {
+    return (player.bestTurn || []).reduce((acc, guess) => {
+        if (typeof guess === 'object' && guess !== null) {
+            const isActuallyMafia = mafiaPlayers.includes(guess.n);
+            if (guess.color === 'black') {
+                acc += isActuallyMafia ? 0.2 : -0.2;
+            } else if (guess.color === 'red') {
+                acc += !isActuallyMafia ? 0.1 : -0.1;
+            }
         }
-        return acc
+        return Math.round(acc * 100) / 100;
     }, 0);
 }
 
@@ -623,12 +633,12 @@ function getMafiaPlayers(game) {
 function calculateRating(game, userId) {
     const mafiaPlayers = getMafiaPlayers(game);
     const player = getPlayer(game, userId);
-    const bestTurnGuess = getBestTurnGuess(player, mafiaPlayers);
+    const supportFivePoints = getSupportFivePoints(player, mafiaPlayers);
     const winner = game.winState === 'mafia' ? 'Маф' : 'Мир';
     const _isWinner = isWinner(player, game);
     const has4Warns = has4Warnings(player);
-    const points = (_isWinner ? 1 : 0) + (bestTurnGuess === 3 ? 0.7 : bestTurnGuess === 2 ? 0.5 : 0) + (has4Warns ? -0.3 : 0);
-    return { points, mafiaPlayers, player, bestTurnGuess, isWinner: _isWinner, winner };
+    const points = Math.round(((_isWinner ? 1 : 0) + supportFivePoints + (has4Warns ? -0.3 : 0)) * 100) / 100;
+    return { points, mafiaPlayers, player, supportFivePoints, isWinner: _isWinner, winner };
 }
 
 function getLast12Months() {

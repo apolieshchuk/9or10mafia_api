@@ -15,22 +15,15 @@ stages:
         secretAccessKey: ${env:ACCOUNT1_AWS_SECRET_ACCESS_KEY}
         dashboard: false
 
+build:
+  esbuild:
+    bundle: true
+    minify: false
+    external: []
+
 plugins:
   - serverless-dotenv-plugin
   - serverless-offline
-
-package:
-  patterns:
-    - '!node_modules/serverless-offline/**'
-    - '!node_modules/serverless-dotenv-plugin/**'
-    - '!node_modules/java-invoke-local/**'
-    - '!node_modules/@esbuild/**'
-    - '!node_modules/luxon/**'
-    - '!node_modules/@hapi/**'
-    - '!node_modules/velocityjs/**'
-    - '!node_modules/jsonpath-plus/**'
-    - '!node_modules/jszip/**'
-    - '!node_modules/jose/**'
 
 provider:
   name: aws

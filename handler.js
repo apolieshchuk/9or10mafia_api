@@ -120,7 +120,7 @@ app.post("/club/rating", async (req, res, next) => {
             for (let game of games) {
                 const { points, player, supportFivePoints, isWinner, winner} = calculateRating(game, user._id);
                 usersStats[user._id].points += points;
-                usersStats[user._id].rating = usersStats[user._id].points / usersStats[user._id].totalGames * 100;
+                usersStats[user._id].rating = pct(usersStats[user._id].points, usersStats[user._id].totalGames);
 
                 if (hardRoles.includes(normalizeRole(player.role))) {
                     usersStats[user._id].hardRoleGames += 1;
@@ -131,32 +131,32 @@ app.post("/club/rating", async (req, res, next) => {
                     usersStats[user._id].supportFiveCount++;
                 }
                 usersStats[user._id].totalWins += isWinner ? 1 : 0;
-                usersStats[user._id].totalWinsRate = usersStats[user._id].totalWins / usersStats[user._id].totalGames * 100;
+                usersStats[user._id].totalWinsRate = pct(usersStats[user._id].totalWins, usersStats[user._id].totalGames);
                 if (isMafia(player)) {
                     usersStats[user._id].mafiaGames++;
                     usersStats[user._id].mafiaWins += isWinner ? 1 : 0;
-                    usersStats[user._id].mafiaWinsRate = usersStats[user._id].mafiaWins / usersStats[user._id].mafiaGames * 100;
+                    usersStats[user._id].mafiaWinsRate = pct(usersStats[user._id].mafiaWins, usersStats[user._id].mafiaGames);
                 }
                 if (isSheriff(player)) {
                     usersStats[user._id].sheriffGames++;
                     usersStats[user._id].sheriffWins += isWinner ? 1 : 0;
-                    usersStats[user._id].sheriffWinsRate = usersStats[user._id].sheriffWins / usersStats[user._id].sheriffGames * 100;
+                    usersStats[user._id].sheriffWinsRate = pct(usersStats[user._id].sheriffWins, usersStats[user._id].sheriffGames);
                 }
                 if (isGood(player)) {
                     usersStats[user._id].citizenGames++;
                     usersStats[user._id].citizenWins += isWinner ? 1 : 0;
-                    usersStats[user._id].citizenWinsRate = usersStats[user._id].citizenWins / usersStats[user._id].citizenGames * 100;
+                    usersStats[user._id].citizenWinsRate = pct(usersStats[user._id].citizenWins, usersStats[user._id].citizenGames);
                 }
                 if (isDon(player)) {
                     usersStats[user._id].donGames++;
                     usersStats[user._id].donWins += isWinner ? 1 : 0;
-                    usersStats[user._id].donWinsRate = usersStats[user._id].donWins / usersStats[user._id].donGames * 100;
+                    usersStats[user._id].donWinsRate = pct(usersStats[user._id].donWins, usersStats[user._id].donGames);
                 }
                 usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;
             }
 
             // hard roles win rate 1+(((tg/2)-n)/(tg/2)) ToDo!
-            usersStats[user._id].hardRoleRate = 1+(((periodStats.totalGames/2) - usersStats[user._id].hardRoleGames)/(periodStats.totalGames/2))
+            usersStats[user._id].hardRoleRate = Math.round((1+(((periodStats.totalGames/2) - usersStats[user._id].hardRoleGames)/(periodStats.totalGames/2))) * 10) / 10;
         }
 
         const allUsersGames = Object.values(usersStats).reduce((acc, user) => acc + user.totalGames, 0);
@@ -570,6 +570,10 @@ app.use((req, res, next) => {
 });
 
 // Backward compatibility: convert old numeric roles to new string roles
+function pct(a, b) {
+    return Math.round((a / b) * 1000) / 10;
+}
+
 function normalizeRole(role) {
     const legacyMap = { 0: 'cit', 1: 'maf', 2: 'maf', 3: 'don', 4: 'sher' };
     return typeof role === 'number' ? legacyMap[role] : role;

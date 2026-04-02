@@ -321,12 +321,18 @@ app.get("/club/last-game-players", clubAuthMiddleware, async (req, res, next) =>
         );
         if (!lastGame) return res.status(200).json({ players: [] });
 
-        const shuffled = (lastGame.players || [])
+        const realPlayers = (lastGame.players || [])
             .filter(p => p.id)
-            .map(p => ({ title: p.title, id: p.id }))
-            .sort(() => Math.random() - 0.5);
+            .map(p => ({ title: p.title, id: p.id }));
 
-        return res.status(200).json({ players: shuffled });
+        const seats = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        for (let i = seats.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [seats[i], seats[j]] = [seats[j], seats[i]];
+        }
+        const result = realPlayers.map((p, i) => ({ ...p, seat: seats[i] }));
+
+        return res.status(200).json({ players: result });
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });

@@ -113,12 +113,13 @@ app.post("/club/rating", async (req, res, next) => {
                 rating: 0,
                 supportFivePoints: 0,
                 supportFiveCount: 0,
+                bonusPoints: 0,
                 firsDie: 0,
                 hardRoleGames: 0,
                 hardRoleRate: 0,
             }
             for (let game of games) {
-                const { points, player, supportFivePoints, isWinner, winner} = calculateRating(game, user._id);
+                const { points, player, supportFivePoints, bonus, isWinner, winner} = calculateRating(game, user._id);
                 usersStats[user._id].points += points;
                 usersStats[user._id].rating = pct(usersStats[user._id].points, usersStats[user._id].totalGames);
 
@@ -152,6 +153,7 @@ app.post("/club/rating", async (req, res, next) => {
                     usersStats[user._id].donWins += isWinner ? 1 : 0;
                     usersStats[user._id].donWinsRate = pct(usersStats[user._id].donWins, usersStats[user._id].donGames);
                 }
+                usersStats[user._id].bonusPoints = Math.round((usersStats[user._id].bonusPoints + bonus) * 10) / 10;
                 usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;
             }
 

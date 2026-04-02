@@ -322,6 +322,7 @@ app.get("/club/last-game-players", clubAuthMiddleware, async (req, res, next) =>
         if (!lastGame) return res.status(200).json({ players: [] });
 
         const shuffled = (lastGame.players || [])
+            .filter(p => p.id)
             .map(p => ({ title: p.title, id: p.id }))
             .sort(() => Math.random() - 0.5);
 

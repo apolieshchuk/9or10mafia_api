@@ -132,7 +132,8 @@ app.post("/club/rating", async (req, res, next) => {
                     usersStats[user._id].hardRoleGames += 1;
                 }
 
-                if (isFirstDie(player) && (player.bestTurn || []).length > 0) {
+                const op5Guesses = (player.bestTurn || []).filter(g => typeof g === 'object' && g !== null && g.color);
+                if (isFirstDie(player) && op5Guesses.length > 0) {
                     usersStats[user._id].supportFivePoints += supportFivePoints;
                     usersStats[user._id].supportFiveCount++;
                 }

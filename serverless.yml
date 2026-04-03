@@ -39,6 +39,10 @@ provider:
             - s3:PutObject
             - s3:GetObject
           Resource: arn:aws:s3:::mafia9or10-avatars/*
+        - Effect: Allow
+          Action:
+            - ses:SendEmail
+          Resource: "*"
 
 functions:
   api:

@@ -138,25 +138,23 @@ app.post("/club/rating", async (req, res, next) => {
                 }
                 usersStats[user._id].totalWins += isWinner ? 1 : 0;
                 usersStats[user._id].totalWinsRate = pct(usersStats[user._id].totalWins, usersStats[user._id].totalGames);
-                if (isMafia(player)) {
+                const role = normalizeRole(player.role);
+                if (role === 'maf') {
                     usersStats[user._id].mafiaGames++;
                     usersStats[user._id].mafiaWins += isWinner ? 1 : 0;
                     usersStats[user._id].mafiaWinsRate = pct(usersStats[user._id].mafiaWins, usersStats[user._id].mafiaGames);
-                }
-                if (isSheriff(player)) {
-                    usersStats[user._id].sheriffGames++;
-                    usersStats[user._id].sheriffWins += isWinner ? 1 : 0;
-                    usersStats[user._id].sheriffWinsRate = pct(usersStats[user._id].sheriffWins, usersStats[user._id].sheriffGames);
-                }
-                if (isGood(player)) {
-                    usersStats[user._id].citizenGames++;
-                    usersStats[user._id].citizenWins += isWinner ? 1 : 0;
-                    usersStats[user._id].citizenWinsRate = pct(usersStats[user._id].citizenWins, usersStats[user._id].citizenGames);
-                }
-                if (isDon(player)) {
+                } else if (role === 'don') {
                     usersStats[user._id].donGames++;
                     usersStats[user._id].donWins += isWinner ? 1 : 0;
                     usersStats[user._id].donWinsRate = pct(usersStats[user._id].donWins, usersStats[user._id].donGames);
+                } else if (role === 'sher') {
+                    usersStats[user._id].sheriffGames++;
+                    usersStats[user._id].sheriffWins += isWinner ? 1 : 0;
+                    usersStats[user._id].sheriffWinsRate = pct(usersStats[user._id].sheriffWins, usersStats[user._id].sheriffGames);
+                } else if (role === 'cit') {
+                    usersStats[user._id].citizenGames++;
+                    usersStats[user._id].citizenWins += isWinner ? 1 : 0;
+                    usersStats[user._id].citizenWinsRate = pct(usersStats[user._id].citizenWins, usersStats[user._id].citizenGames);
                 }
                 usersStats[user._id].bonusPoints = Math.round((usersStats[user._id].bonusPoints + bonus) * 10) / 10;
                 usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;

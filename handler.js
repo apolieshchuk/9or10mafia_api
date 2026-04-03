@@ -202,9 +202,10 @@ app.post("/club/rating", async (req, res, next) => {
 });
 
 const calculateTotalGamesInfo = async (db, clubId, latestRatingPeriod) => {
-    // total games info for last 12 months
     const yearAgo = new Date();
-    yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+    yearAgo.setDate(1);
+    yearAgo.setMonth(yearAgo.getMonth() - 11);
+    yearAgo.setHours(0, 0, 0, 0);
     const gamesTotal1Year = await db.collection('games').find({ club: clubId, createdAt: { $gte: yearAgo } })
     const defaultTotalStats = {
         totalGames: 0,

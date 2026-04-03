@@ -126,7 +126,6 @@ app.post("/club/rating", async (req, res, next) => {
             for (let game of games) {
                 const { points, player, supportFivePoints, bonus, isWinner, winner} = calculateRating(game, user._id);
                 usersStats[user._id].points += points;
-                usersStats[user._id].rating = pct(usersStats[user._id].points, usersStats[user._id].totalGames);
 
                 if (hardRoles.includes(normalizeRole(player.role))) {
                     usersStats[user._id].hardRoleGames += 1;
@@ -163,7 +162,13 @@ app.post("/club/rating", async (req, res, next) => {
                 usersStats[user._id].firsDie += isFirstDie(player) ? 1 : 0;
             }
 
-            // hard roles win rate 1+(((tg/2)-n)/(tg/2)) ToDo!
+            usersStats[user._id].rating = Math.round(
+                (pct(usersStats[user._id].points, usersStats[user._id].totalGames)
+                    + usersStats[user._id].supportFivePoints * 10
+                    + usersStats[user._id].bonusPoints * 10
+                ) * 10
+            ) / 10;
+
             usersStats[user._id].hardRoleRate = Math.round((1+(((periodStats.totalGames/2) - usersStats[user._id].hardRoleGames)/(periodStats.totalGames/2))) * 10) / 10;
         }
 
@@ -721,7 +726,7 @@ function calculateRating(game, userId) {
     const winner = game.winState === 'mafia' ? 'Маф' : 'Мир';
     const _isWinner = isWinner(player, game);
     const has4Warns = has4Warnings(player);
-    const points = Math.round(((_isWinner ? 1 : 0) + supportFivePoints + bonus + (has4Warns ? -0.3 : 0)) * 100) / 100;
+    const points = Math.round(((_isWinner ? 1 : 0) + (has4Warns ? -0.3 : 0)) * 100) / 100;
     return { points, mafiaPlayers, player, supportFivePoints, bonus, isWinner: _isWinner, winner };
 }
 

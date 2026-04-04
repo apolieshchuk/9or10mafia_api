@@ -1,3 +1,14 @@
+// Node 21+: `buffer` no longer exports SlowBuffer; jwa (jsonwebtoken) pulls buffer-equal-constant-time
+// which reads SlowBuffer.prototype at load time → TypeError without this.
+(function polyfillSlowBuffer() {
+  try {
+    const buf = require('buffer');
+    if (buf.SlowBuffer == null && buf.Buffer) {
+      buf.SlowBuffer = buf.Buffer;
+    }
+  } catch (_) { /* ignore */ }
+})();
+
 const serverless = require("serverless-http");
 const express = require("express");
 const app = express();
@@ -7,6 +18,12 @@ const bcrypt = require("bcryptjs");
 const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware } = require('./auth.middleware');
 const jwt = require("jsonwebtoken");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const {
+    parseScheduledDateInput,
+    vancouverTodayYmd,
+    vancouverYmdToUtcDate,
+    addDaysToYmd,
+} = require('./vancouverDate');
 
 const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-west-2' });
 const S3_BUCKET = process.env.S3_BUCKET || 'mafia9or10-avatars';
@@ -630,6 +647,501 @@ app.get("/club/rating-periods", allAuthMiddleware, async (req, res, next) => {
         return res.status(500).json({
             error: 'Server Error',
         });
+    } finally {
+        await client.close(true);
+    }
+});
+
+// --- Tournaments ---
+
+function oidStr(x) {
+    return x && x.toString ? x.toString() : String(x);
+}
+
+function parseObjectId(id) {
+    try {
+        return new ObjectId(id);
+    } catch {
+        return null;
+    }
+}
+
+function userInTournamentParticipants(userId, tournament) {
+    const uid = oidStr(userId);
+    return (tournament.participants || []).some((p) =>
+        (p.userIds || []).some((x) => oidStr(x) === uid)
+    );
+}
+
+async function canReadTournament(tournament, user) {
+    if (user.authType === 'Клуб' && oidStr(tournament.club) === oidStr(user._id)) return true;
+    if (user.authType === 'Учасник' && userInTournamentParticipants(user._id, tournament)) return true;
+    return false;
+}
+
+function normalizeParticipantUserIds(participants) {
+    if (!Array.isArray(participants)) return [];
+    const out = [];
+    for (const p of participants) {
+        const raw = p.userIds || [];
+        if (raw.length < 1 || raw.length > 2) continue;
+        const ids = [];
+        let ok = true;
+        for (const id of raw) {
+            const o = parseObjectId(id);
+            if (!o) {
+                ok = false;
+                break;
+            }
+            ids.push(o);
+        }
+        if (ok) out.push({ userIds: ids });
+    }
+    return out;
+}
+
+function gameShouldRedact(tournament, gameIndex) {
+    const n = tournament.numGames;
+    const half = Math.floor(n / 2);
+    return tournament.hideResultsAfterHalf && tournament.status !== 'completed' && gameIndex > half;
+}
+
+function aggregateTournamentStandings(games, tournament) {
+    const stats = {};
+    for (const game of games) {
+        if (gameShouldRedact(tournament, game.gameIndex)) continue;
+        const seen = new Set();
+        for (const pl of game.players || []) {
+            if (!pl.id) continue;
+            const uid = oidStr(pl.id);
+            if (seen.has(uid)) continue;
+            seen.add(uid);
+            const { points, supportFivePoints, bonus, player } = calculateRating(game, uid);
+            if (!player) continue;
+            if (!stats[uid]) {
+                stats[uid] = { userId: uid, pointsSum: 0, supportFiveSum: 0, bonusSum: 0, gamesPlayed: 0 };
+            }
+            const op5Guesses = (player.bestTurn || []).filter((g) => typeof g === 'object' && g !== null && g.color);
+            const s5 = isFirstDie(player) && op5Guesses.length > 0 ? supportFivePoints : 0;
+            stats[uid].pointsSum = Math.round((stats[uid].pointsSum + points) * 100) / 100;
+            stats[uid].supportFiveSum = Math.round((stats[uid].supportFiveSum + s5) * 100) / 100;
+            stats[uid].bonusSum = Math.round((stats[uid].bonusSum + bonus) * 10) / 10;
+            stats[uid].gamesPlayed += 1;
+        }
+    }
+    return Object.values(stats).map((s) => ({
+        ...s,
+        total: Math.round((s.pointsSum + s.supportFiveSum + s.bonusSum) * 100) / 100,
+    }));
+}
+
+app.post('/club/tournament', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const clubId = new ObjectId(req.user._id);
+        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf } = req.body;
+        if (!name || !numGames || numGames < 1) {
+            return res.status(422).json({ error: 'name and numGames required' });
+        }
+        const doc = {
+            club: clubId,
+            name: String(name),
+            numGames: Number(numGames),
+            scheduledDate: parseScheduledDateInput(scheduledDate),
+            status: 'draft',
+            participants: normalizeParticipantUserIds(participants || []),
+            hideResultsAfterHalf: Boolean(hideResultsAfterHalf),
+            seatingByGame: null,
+            winnerUserId: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        };
+        const r = await db.collection('tournaments').insertOne(doc);
+        return res.status(200).json({ id: r.insertedId.toString() });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.put('/club/tournament/:id', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(req.user._id)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const maxIdx = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: -1 }).limit(1).toArray();
+        const maxSaved = maxIdx[0]?.gameIndex || 0;
+        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf } = req.body;
+        const update = { updatedAt: new Date() };
+        if (name !== undefined) update.name = String(name);
+        if (scheduledDate !== undefined) {
+            update.scheduledDate = parseScheduledDateInput(scheduledDate);
+        }
+        if (hideResultsAfterHalf !== undefined) update.hideResultsAfterHalf = Boolean(hideResultsAfterHalf);
+        if (participants !== undefined) update.participants = normalizeParticipantUserIds(participants);
+        if (numGames !== undefined) {
+            const ng = Number(numGames);
+            if (ng < maxSaved) {
+                return res.status(422).json({ error: `numGames must be >= ${maxSaved}` });
+            }
+            update.numGames = ng;
+        }
+        await db.collection('tournaments').updateOne({ _id: tid }, { $set: update });
+        return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.post('/club/tournament/:id/start', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(req.user._id)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        if (tournament.status !== 'draft') {
+            return res.status(422).json({ error: 'Tournament already started or completed' });
+        }
+        await db.collection('tournaments').updateOne(
+            { _id: tid },
+            { $set: { status: 'in_progress', updatedAt: new Date() } }
+        );
+        return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.post('/club/tournament/:id/complete', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(req.user._id)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const n = tournament.numGames;
+        const games = await db.collection('tournament_games').find({ tournament: tid }).toArray();
+        const idxSet = new Set(games.map((g) => g.gameIndex));
+        for (let i = 1; i <= n; i++) {
+            if (!idxSet.has(i)) {
+                return res.status(422).json({ error: 'Not all games saved' });
+            }
+        }
+        const standings = aggregateTournamentStandings(games, { ...tournament, status: 'completed' });
+        standings.sort((a, b) => b.total - a.total);
+        const winnerUserId = standings[0] ? parseObjectId(standings[0].userId) : null;
+        await db.collection('tournaments').updateOne(
+            { _id: tid },
+            { $set: { status: 'completed', winnerUserId, updatedAt: new Date() } }
+        );
+        return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.put('/club/tournament/:id/seating', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(req.user._id)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const { seatingByGame } = req.body;
+        if (!seatingByGame || typeof seatingByGame !== 'object') {
+            return res.status(422).json({ error: 'seatingByGame required' });
+        }
+        await db.collection('tournaments').updateOne(
+            { _id: tid },
+            { $set: { seatingByGame, updatedAt: new Date() } }
+        );
+        return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.post('/club/tournament-game', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const clubId = new ObjectId(req.user._id);
+        const { tournamentId, gameIndex, players, winState, votings } = req.body;
+        const tid = parseObjectId(tournamentId);
+        const k = Number(gameIndex);
+        if (!tid || !k || k < 1) {
+            return res.status(422).json({ error: 'tournamentId and gameIndex required' });
+        }
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(clubId)) {
+            return res.status(404).json({ error: 'Tournament not found' });
+        }
+        if (tournament.status !== 'in_progress') {
+            return res.status(422).json({ error: 'Tournament not in progress' });
+        }
+        if (k > tournament.numGames) {
+            return res.status(422).json({ error: 'gameIndex out of range' });
+        }
+        const existing = await db.collection('tournament_games').findOne({ tournament: tid, gameIndex: k });
+        if (existing) {
+            return res.status(422).json({ error: 'Game already saved' });
+        }
+        for (let i = 1; i < k; i++) {
+            const prev = await db.collection('tournament_games').findOne({ tournament: tid, gameIndex: i });
+            if (!prev) {
+                return res.status(422).json({ error: `Save game ${i} first` });
+            }
+        }
+        await db.collection('tournament_games').insertOne({
+            tournament: tid,
+            gameIndex: k,
+            club: clubId,
+            players: players.map((player) => ({
+                ...player,
+                role: normalizeRole(player.role),
+                id: player.id && new ObjectId(player.id),
+            })),
+            winState,
+            votings,
+            locked: true,
+            createdAt: new Date(),
+        });
+        return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+function serializeTournamentRow(t, extra = {}) {
+    return {
+        id: t._id.toString(),
+        name: t.name,
+        numGames: t.numGames,
+        scheduledDate: t.scheduledDate,
+        status: t.status,
+        hideResultsAfterHalf: t.hideResultsAfterHalf,
+        winnerUserId: t.winnerUserId ? t.winnerUserId.toString() : null,
+        participants: (t.participants || []).map((p) => ({
+            userIds: (p.userIds || []).map((x) => x.toString()),
+        })),
+        seatingByGame: t.seatingByGame || null,
+        clubId: t.club ? t.club.toString() : null,
+        ...extra,
+    };
+}
+
+app.get('/tournaments', allAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        let filter;
+        if (req.user.authType === 'Клуб') {
+            filter = { club: new ObjectId(req.user._id) };
+        } else {
+            filter = { participants: { $elemMatch: { userIds: new ObjectId(req.user._id) } } };
+        }
+        const items = await db.collection('tournaments').find(filter).sort({ _id: -1 }).toArray();
+        const withCounts = await Promise.all(
+            items.map(async (t) => {
+                const count = await db.collection('tournament_games').countDocuments({ tournament: t._id });
+                return serializeTournamentRow(t, { gamesSaved: count });
+            })
+        );
+        const winnerOids = [...new Set(withCounts.map((t) => t.winnerUserId).filter(Boolean))].map(parseObjectId).filter(Boolean);
+        const winnerUsers = winnerOids.length
+            ? await db.collection('users').find({ _id: { $in: winnerOids } }, { projection: { nickname: 1 } }).toArray()
+            : [];
+        const wnick = Object.fromEntries(winnerUsers.map((u) => [u._id.toString(), u.nickname || '']));
+        const enriched = withCounts.map((t) => ({
+            ...t,
+            winnerNickname: t.winnerUserId ? wnick[t.winnerUserId] || null : null,
+        }));
+        return res.status(200).json({ items: enriched });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.get('/tournament/:id', allAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !(await canReadTournament(tournament, req.user))) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const gamesSaved = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
+        const indices = gamesSaved.map((g) => g.gameIndex);
+        let nextGameIndex = null;
+        if (tournament.status === 'in_progress' && indices.length < tournament.numGames) {
+            for (let i = 1; i <= tournament.numGames; i++) {
+                if (!indices.includes(i)) {
+                    nextGameIndex = i;
+                    break;
+                }
+            }
+        }
+        let winnerNickname = null;
+        if (tournament.winnerUserId) {
+            const u = await db.collection('users').findOne({ _id: tournament.winnerUserId }, { projection: { nickname: 1 } });
+            winnerNickname = u?.nickname || null;
+        }
+        return res.status(200).json({
+            ...serializeTournamentRow(tournament),
+            gamesSaved: gamesSaved.length,
+            savedGameIndices: indices,
+            nextGameIndex,
+            winnerNickname,
+        });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.get('/tournament/:id/games', allAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !(await canReadTournament(tournament, req.user))) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
+        const items = games.map((g) => {
+            const redact = gameShouldRedact(tournament, g.gameIndex);
+            if (redact) {
+                return {
+                    id: g._id.toString(),
+                    gameIndex: g.gameIndex,
+                    hidden: true,
+                    createdAt: g.createdAt,
+                };
+            }
+            return {
+                id: g._id.toString(),
+                gameIndex: g.gameIndex,
+                hidden: false,
+                winState: g.winState,
+                players: g.players,
+                votings: g.votings,
+                createdAt: g.createdAt,
+            };
+        });
+        return res.status(200).json({ items });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+app.get('/tournament/:id/standings', allAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !(await canReadTournament(tournament, req.user))) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
+        const raw = aggregateTournamentStandings(games, tournament);
+        const userIds = [...new Set(raw.map((r) => r.userId))];
+        const oids = userIds.map((id) => parseObjectId(id)).filter(Boolean);
+        const users = await db.collection('users').find({ _id: { $in: oids } }).toArray();
+        const nickById = Object.fromEntries(users.map((u) => [u._id.toString(), u.nickname || u.name || '']));
+        const rows = raw
+            .map((r) => ({
+                ...r,
+                nickname: nickById[r.userId] || r.userId,
+            }))
+            .sort((a, b) => b.total - a.total)
+            .map((r, i) => ({ ...r, rank: i + 1 }));
+        return res.status(200).json({ items: rows });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+/** Public: tournaments with a date in the next 14 days (not completed). */
+app.get('/public/upcoming-tournaments', async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const todayYmd = vancouverTodayYmd();
+        const windowStart = vancouverYmdToUtcDate(todayYmd);
+        const upperExclusiveYmd = addDaysToYmd(todayYmd, 15);
+        const windowEndExclusive = vancouverYmdToUtcDate(upperExclusiveYmd);
+
+        const agg = await db.collection('tournaments').aggregate([
+            {
+                $match: {
+                    scheduledDate: {
+                        $gte: windowStart,
+                        $lt: windowEndExclusive,
+                        $ne: null,
+                    },
+                    status: { $in: ['draft', 'in_progress'] },
+                },
+            },
+            { $lookup: { from: 'clubs', localField: 'club', foreignField: '_id', as: 'clubDoc' } },
+            { $unwind: { path: '$clubDoc', preserveNullAndEmptyArrays: true } },
+            { $sort: { scheduledDate: 1 } },
+            { $limit: 15 },
+            {
+                $project: {
+                    _id: 0,
+                    id: { $toString: '$_id' },
+                    name: 1,
+                    scheduledDate: 1,
+                    numGames: 1,
+                    status: 1,
+                    clubName: { $ifNull: ['$clubDoc.name', ''] },
+                },
+            },
+        ]);
+        const items = await agg.toArray();
+        return res.status(200).json({ items });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
     } finally {
         await client.close(true);
     }

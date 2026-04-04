@@ -1002,6 +1002,21 @@ async function buildPublicParticipantSlots(db, tournament) {
     });
 }
 
+function serializeSeatingByGameForPublic(seatingByGame) {
+    if (!seatingByGame || typeof seatingByGame !== 'object') return null;
+    const out = {};
+    for (const [gk, seats] of Object.entries(seatingByGame)) {
+        if (!seats || typeof seats !== 'object') continue;
+        out[gk] = {};
+        for (const [sk, cell] of Object.entries(seats)) {
+            out[gk][sk] = {
+                userIds: (cell.userIds || []).map((x) => oidStr(x)),
+            };
+        }
+    }
+    return Object.keys(out).length ? out : null;
+}
+
 app.get('/tournaments', allAuthMiddleware, async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
@@ -1205,6 +1220,32 @@ app.get('/public/tournament/:id', async (req, res) => {
         const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1 } });
         const slots = await buildPublicParticipantSlots(db, tournament);
         const slotsWithPlayers = slots.filter((s) => s.players && s.players.length > 0);
+
+        const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
+        const rawStandings = aggregateTournamentStandings(games, tournament);
+        const standingIds = [...new Set(rawStandings.map((r) => r.userId))];
+        const standingOids = standingIds.map(parseObjectId).filter(Boolean);
+        const standingUsers = standingOids.length
+            ? await db.collection('users').find({ _id: { $in: standingOids } }, { projection: { nickname: 1, name: 1, avatarUrl: 1 } }).toArray()
+            : [];
+        const standingById = Object.fromEntries(standingUsers.map((u) => [u._id.toString(), u]));
+        const standingsRows = rawStandings
+            .map((r) => {
+                const u = standingById[r.userId];
+                return {
+                    userId: r.userId,
+                    nickname: u ? (u.nickname || u.name || '') : r.userId,
+                    avatarUrl: u?.avatarUrl || null,
+                    pointsSum: r.pointsSum,
+                    supportFiveSum: r.supportFiveSum,
+                    bonusSum: r.bonusSum,
+                    total: r.total,
+                    gamesPlayed: r.gamesPlayed,
+                };
+            })
+            .sort((a, b) => b.total - a.total)
+            .map((r, i) => ({ ...r, rank: i + 1 }));
+
         return res.status(200).json({
             id: tournament._id.toString(),
             name: tournament.name,
@@ -1214,6 +1255,8 @@ app.get('/public/tournament/:id', async (req, res) => {
             clubName: club?.name || '',
             publicDescription: tournament.publicDescription != null ? String(tournament.publicDescription) : '',
             participantSlots: slotsWithPlayers,
+            seatingByGame: serializeSeatingByGameForPublic(tournament.seatingByGame),
+            standingsRows,
         });
     } catch (e) {
         console.error(e?.message);

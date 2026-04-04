@@ -739,7 +739,7 @@ app.post('/club/tournament', clubAuthMiddleware, async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
         const clubId = new ObjectId(req.user._id);
-        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf } = req.body;
+        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf, publicDescription } = req.body;
         if (!name || !numGames || numGames < 1) {
             return res.status(422).json({ error: 'name and numGames required' });
         }
@@ -750,6 +750,7 @@ app.post('/club/tournament', clubAuthMiddleware, async (req, res) => {
             scheduledDate: parseScheduledDateInput(scheduledDate),
             status: 'draft',
             participants: normalizeParticipantUserIds(participants || []),
+            publicDescription: typeof publicDescription === 'string' ? publicDescription.slice(0, 12000) : '',
             hideResultsAfterHalf: Boolean(hideResultsAfterHalf),
             seatingByGame: null,
             winnerUserId: null,
@@ -777,11 +778,14 @@ app.put('/club/tournament/:id', clubAuthMiddleware, async (req, res) => {
         }
         const maxIdx = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: -1 }).limit(1).toArray();
         const maxSaved = maxIdx[0]?.gameIndex || 0;
-        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf } = req.body;
+        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf, publicDescription } = req.body;
         const update = { updatedAt: new Date() };
         if (name !== undefined) update.name = String(name);
         if (scheduledDate !== undefined) {
             update.scheduledDate = parseScheduledDateInput(scheduledDate);
+        }
+        if (publicDescription !== undefined) {
+            update.publicDescription = typeof publicDescription === 'string' ? publicDescription.slice(0, 12000) : '';
         }
         if (hideResultsAfterHalf !== undefined) update.hideResultsAfterHalf = Boolean(hideResultsAfterHalf);
         if (participants !== undefined) update.participants = normalizeParticipantUserIds(participants);
@@ -948,6 +952,7 @@ function serializeTournamentRow(t, extra = {}) {
         status: t.status,
         hideResultsAfterHalf: t.hideResultsAfterHalf,
         winnerUserId: t.winnerUserId ? t.winnerUserId.toString() : null,
+        publicDescription: t.publicDescription != null ? String(t.publicDescription) : '',
         participants: (t.participants || []).map((p) => ({
             userIds: (p.userIds || []).map((x) => x.toString()),
         })),
@@ -955,6 +960,46 @@ function serializeTournamentRow(t, extra = {}) {
         clubId: t.club ? t.club.toString() : null,
         ...extra,
     };
+}
+
+/** Public landing: recent/upcoming scheduled tournaments only (no sensitive history). */
+function isTournamentPubliclyViewable(tournament) {
+    if (!tournament.scheduledDate) return false;
+    const status = tournament.status;
+    if (!['draft', 'in_progress', 'completed'].includes(status)) return false;
+    const todayYmd = vancouverTodayYmd();
+    const lo = vancouverYmdToUtcDate(addDaysToYmd(todayYmd, -30));
+    const hiExcl = vancouverYmdToUtcDate(addDaysToYmd(todayYmd, 91));
+    if (!lo || !hiExcl) return false;
+    const s = tournament.scheduledDate;
+    return s >= lo && s < hiExcl;
+}
+
+async function buildPublicParticipantSlots(db, tournament) {
+    const parts = tournament.participants || [];
+    const uniqStr = new Set();
+    for (const p of parts) {
+        for (const id of p.userIds || []) {
+            uniqStr.add(oidStr(id));
+        }
+    }
+    const oids = [...uniqStr].map(parseObjectId).filter(Boolean);
+    const users = oids.length
+        ? await db.collection('users').find({ _id: { $in: oids } }, { projection: { nickname: 1, name: 1, avatarUrl: 1 } }).toArray()
+        : [];
+    const byId = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
+    return parts.map((p, i) => {
+        const players = (p.userIds || []).map((oid) => {
+            const id = oidStr(oid);
+            const u = byId[id];
+            return {
+                id,
+                nickname: (u && (u.nickname || u.name)) || 'Учасник',
+                avatarUrl: (u && u.avatarUrl) || null,
+            };
+        });
+        return { seatIndex: i + 1, players };
+    });
 }
 
 app.get('/tournaments', allAuthMiddleware, async (req, res) => {
@@ -1139,6 +1184,37 @@ app.get('/public/upcoming-tournaments', async (req, res) => {
         ]);
         const items = await agg.toArray();
         return res.status(200).json({ items });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+/** Public: tournament card + participant list (avatars) for landing / share links. */
+app.get('/public/tournament/:id', async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !isTournamentPubliclyViewable(tournament)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1 } });
+        const slots = await buildPublicParticipantSlots(db, tournament);
+        const slotsWithPlayers = slots.filter((s) => s.players && s.players.length > 0);
+        return res.status(200).json({
+            id: tournament._id.toString(),
+            name: tournament.name,
+            numGames: tournament.numGames,
+            scheduledDate: tournament.scheduledDate,
+            status: tournament.status,
+            clubName: club?.name || '',
+            publicDescription: tournament.publicDescription != null ? String(tournament.publicDescription) : '',
+            participantSlots: slotsWithPlayers,
+        });
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });

@@ -1222,6 +1222,16 @@ app.get('/public/tournament/:id', async (req, res) => {
         const slotsWithPlayers = slots.filter((s) => s.players && s.players.length > 0);
 
         const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
+        const savedGameIndices = games.map((g) => g.gameIndex);
+        let nextGameIndex = null;
+        if (tournament.status === 'in_progress' && savedGameIndices.length < tournament.numGames) {
+            for (let i = 1; i <= tournament.numGames; i++) {
+                if (!savedGameIndices.includes(i)) {
+                    nextGameIndex = i;
+                    break;
+                }
+            }
+        }
         const rawStandings = aggregateTournamentStandings(games, tournament);
         const standingIds = [...new Set(rawStandings.map((r) => r.userId))];
         const standingOids = standingIds.map(parseObjectId).filter(Boolean);
@@ -1252,6 +1262,8 @@ app.get('/public/tournament/:id', async (req, res) => {
             numGames: tournament.numGames,
             scheduledDate: tournament.scheduledDate,
             status: tournament.status,
+            clubId: tournament.club ? tournament.club.toString() : null,
+            nextGameIndex,
             clubName: club?.name || '',
             clubAvatarUrl: club?.avatarUrl || null,
             publicDescription: tournament.publicDescription != null ? String(tournament.publicDescription) : '',

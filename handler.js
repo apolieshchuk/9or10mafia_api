@@ -1161,7 +1161,7 @@ app.get('/tournament/:id/standings', allAuthMiddleware, async (req, res) => {
     }
 });
 
-/** Public: tournaments with a date in the next 14 days (not completed). */
+/** Public: announced (draft) tournaments with a date in the next 14 days — hide once started (in_progress). */
 app.get('/public/upcoming-tournaments', async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
@@ -1178,7 +1178,7 @@ app.get('/public/upcoming-tournaments', async (req, res) => {
                         $lt: windowEndExclusive,
                         $ne: null,
                     },
-                    status: { $in: ['draft', 'in_progress'] },
+                    status: 'draft',
                 },
             },
             { $lookup: { from: 'clubs', localField: 'club', foreignField: '_id', as: 'clubDoc' } },

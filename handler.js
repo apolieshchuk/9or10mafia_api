@@ -1217,7 +1217,7 @@ app.get('/public/tournament/:id', async (req, res) => {
         if (!tournament || !isTournamentPubliclyViewable(tournament)) {
             return res.status(404).json({ error: 'Not found' });
         }
-        const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1 } });
+        const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1, avatarUrl: 1 } });
         const slots = await buildPublicParticipantSlots(db, tournament);
         const slotsWithPlayers = slots.filter((s) => s.players && s.players.length > 0);
 
@@ -1253,6 +1253,7 @@ app.get('/public/tournament/:id', async (req, res) => {
             scheduledDate: tournament.scheduledDate,
             status: tournament.status,
             clubName: club?.name || '',
+            clubAvatarUrl: club?.avatarUrl || null,
             publicDescription: tournament.publicDescription != null ? String(tournament.publicDescription) : '',
             participantSlots: slotsWithPlayers,
             seatingByGame: serializeSeatingByGameForPublic(tournament.seatingByGame),

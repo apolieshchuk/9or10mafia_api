@@ -466,12 +466,33 @@ app.post("/user/avatar", allAuthMiddleware, async (req, res, next) => {
 
         const avatarUrl = `https://${S3_BUCKET}.s3.amazonaws.com/${key}?t=${Date.now()}`;
         const userId = new ObjectId(req.user._id);
-        await db.collection('users').updateOne({ _id: userId }, { $set: { avatarUrl } });
+        const isClub = req.user.authType === 'Клуб';
 
-        const token = jwt.sign({
-            _id: req.user._id, name: req.user.name, email: req.user.email,
-            nickname: req.user.nickname, clubs: req.user.clubs, authType: req.user.authType, avatarUrl,
-        }, 'supo-sect-ketyasdzaerfdsd', { expiresIn: '1w' });
+        await db.collection(isClub ? 'clubs' : 'users').updateOne(
+            { _id: userId },
+            { $set: { avatarUrl } },
+        );
+
+        const tokenPayload = isClub
+            ? {
+                _id: req.user._id,
+                name: req.user.name,
+                email: req.user.email,
+                nickname: req.user.nickname || req.user.name,
+                authType: req.user.authType,
+                avatarUrl,
+            }
+            : {
+                _id: req.user._id,
+                name: req.user.name,
+                email: req.user.email,
+                nickname: req.user.nickname,
+                clubs: req.user.clubs,
+                authType: req.user.authType,
+                avatarUrl,
+            };
+
+        const token = jwt.sign(tokenPayload, 'supo-sect-ketyasdzaerfdsd', { expiresIn: '1w' });
 
         res.status(200).json({ token, avatarUrl });
     } catch (e) {

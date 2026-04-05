@@ -726,6 +726,21 @@ function userInTournamentParticipants(userId, tournament) {
     );
 }
 
+function userIdInSeatingByGame(seatingByGame, userId) {
+    const uid = oidStr(userId);
+    if (!seatingByGame || typeof seatingByGame !== 'object') return false;
+    for (const seats of Object.values(seatingByGame)) {
+        if (!seats || typeof seats !== 'object') continue;
+        for (const cell of Object.values(seats)) {
+            const ids = (cell && cell.userIds) || [];
+            for (const x of ids) {
+                if (oidStr(x) === uid) return true;
+            }
+        }
+    }
+    return false;
+}
+
 /** Усі userId, що з’являються в розсадці хоча б в одній грі (основні + запасні за столом). */
 function userIdsInSeatingByGame(seatingByGame) {
     const set = new Set();
@@ -787,7 +802,10 @@ async function enrichParticipantSlotsWithSeatingOnlyUsers(db, tournament, slots)
 
 async function canReadTournament(tournament, user) {
     if (user.authType === 'Клуб' && oidStr(tournament.club) === oidStr(user._id)) return true;
-    if (user.authType === 'Учасник' && userInTournamentParticipants(user._id, tournament)) return true;
+    if (user.authType === 'Учасник') {
+        if (userInTournamentParticipants(user._id, tournament)) return true;
+        if (userIdInSeatingByGame(tournament.seatingByGame, user._id)) return true;
+    }
     return false;
 }
 
@@ -1217,13 +1235,43 @@ function serializeSeatingByGameForPublic(seatingByGame) {
 app.get('/tournaments', allAuthMiddleware, async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
-        let filter;
+        let items;
         if (req.user.authType === 'Клуб') {
-            filter = { club: new ObjectId(req.user._id) };
+            items = await db
+                .collection('tournaments')
+                .find({ club: new ObjectId(req.user._id) })
+                .sort({ _id: -1 })
+                .toArray();
         } else {
-            filter = { participants: { $elemMatch: { userIds: new ObjectId(req.user._id) } } };
+            const uid = parseObjectId(req.user._id);
+            if (!uid) {
+                return res.status(422).json({ error: 'Invalid user id' });
+            }
+            const byParticipants = await db
+                .collection('tournaments')
+                .find({ participants: { $elemMatch: { userIds: uid } } })
+                .sort({ _id: -1 })
+                .toArray();
+            const seen = new Set(byParticipants.map((t) => t._id.toString()));
+            const seatingCandidates = await db
+                .collection('tournaments')
+                .find({
+                    seatingByGame: { $exists: true, $ne: null },
+                    _id: { $nin: byParticipants.map((t) => t._id) },
+                })
+                .sort({ _id: -1 })
+                .limit(400)
+                .toArray();
+            const fromSeating = seatingCandidates.filter((t) => userIdInSeatingByGame(t.seatingByGame, req.user._id));
+            for (const t of fromSeating) {
+                if (!seen.has(t._id.toString())) {
+                    seen.add(t._id.toString());
+                    byParticipants.push(t);
+                }
+            }
+            byParticipants.sort((a, b) => (a._id < b._id ? 1 : a._id > b._id ? -1 : 0));
+            items = byParticipants;
         }
-        const items = await db.collection('tournaments').find(filter).sort({ _id: -1 }).toArray();
         const withCounts = await Promise.all(
             items.map(async (t) => {
                 const count = await db.collection('tournament_games').countDocuments({ tournament: t._id });

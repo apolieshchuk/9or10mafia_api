@@ -1232,6 +1232,121 @@ function serializeSeatingByGameForPublic(seatingByGame) {
     return Object.keys(out).length ? out : null;
 }
 
+function escapeHtmlAttr(s) {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+/** Absolute API base for og:image (no trailing slash). Prefer PUBLIC_API_BASE_URL on Lambda. */
+function publicApiAbsoluteBase(req) {
+    const fixed = process.env.PUBLIC_API_BASE_URL;
+    if (fixed && String(fixed).trim()) return String(fixed).replace(/\/$/, '');
+    const proto = String(req.get('x-forwarded-proto') || req.protocol || 'https')
+        .split(',')[0]
+        .trim();
+    const host = String(req.get('x-forwarded-host') || req.get('host') || '')
+        .split(',')[0]
+        .trim();
+    if (!host) return '';
+    return `${proto}://${host}`;
+}
+
+function uniquePlayersFromPublicSlots(slotsWithPlayers) {
+    const byId = new Map();
+    for (const slot of slotsWithPlayers || []) {
+        for (const p of slot.players || []) {
+            if (p && p.id && !byId.has(p.id)) byId.set(p.id, p);
+        }
+    }
+    return [...byId.values()];
+}
+
+async function fetchImageBufferForOg(url, ms) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), ms);
+    try {
+        const r = await fetch(url, {
+            signal: controller.signal,
+            redirect: 'follow',
+            headers: { Accept: 'image/*' },
+        });
+        if (!r.ok) return null;
+        const len = Number(r.headers.get('content-length'));
+        if (Number.isFinite(len) && len > 4 * 1024 * 1024) return null;
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length > 4 * 1024 * 1024) return null;
+        return buf;
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(t);
+    }
+}
+
+/** 1200×630 PNG for Open Graph — сітка аватарок учасників (і клубу, якщо немає фото гравців). */
+async function buildTournamentOgImageBuffer(slotsWithPlayers, club) {
+    const Jimp = require('jimp');
+    const W = 1200;
+    const H = 630;
+    const bg = new Jimp(W, H, '#15181e');
+
+    const players = uniquePlayersFromPublicSlots(slotsWithPlayers).filter(
+        (p) => p.avatarUrl && /^https?:\/\//i.test(String(p.avatarUrl).trim())
+    );
+    const maxCells = 12;
+    const toLoad = players.slice(0, maxCells);
+    const cell = 108;
+    const gap = 14;
+    const cols = Math.min(6, Math.max(1, toLoad.length || 1));
+    const rows = Math.max(1, Math.ceil(toLoad.length / cols));
+    const gridW = cols * cell + (cols - 1) * gap;
+    const gridH = rows * cell + (rows - 1) * gap;
+    const startX = Math.floor((W - gridW) / 2);
+    const startY = Math.floor((H - gridH) / 2);
+
+    for (let i = 0; i < toLoad.length; i++) {
+        const url = String(toLoad[i].avatarUrl).trim();
+        const buf = await fetchImageBufferForOg(url, 9000);
+        let tile;
+        try {
+            tile = buf ? await Jimp.read(buf) : null;
+        } catch {
+            tile = null;
+        }
+        if (!tile) {
+            tile = new Jimp(cell, cell, '#2d333b');
+        } else {
+            await tile.cover(cell, cell);
+        }
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        bg.composite(tile, startX + col * (cell + gap), startY + row * (cell + gap));
+    }
+
+    if (
+        !toLoad.length &&
+        club?.avatarUrl &&
+        /^https?:\/\//i.test(String(club.avatarUrl).trim())
+    ) {
+        const buf = await fetchImageBufferForOg(String(club.avatarUrl).trim(), 9000);
+        try {
+            const logo = buf ? await Jimp.read(buf) : null;
+            if (logo) {
+                const side = 220;
+                await logo.cover(side, side);
+                bg.composite(logo, Math.floor((W - side) / 2), Math.floor((H - side) / 2));
+            }
+        } catch {
+            /* ignore */
+        }
+    }
+
+    return await bg.getBufferAsync(Jimp.MIME_PNG);
+}
+
 app.get('/tournaments', allAuthMiddleware, async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
@@ -1507,6 +1622,99 @@ app.get('/public/tournament/:id', async (req, res) => {
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+/** Open Graph / Twitter image: аватарки учасників (PNG 1200×630). */
+app.get('/public/tournament/:id/og.png', async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(404).end();
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !isTournamentPubliclyViewable(tournament)) {
+            return res.status(404).end();
+        }
+        const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1, avatarUrl: 1 } });
+        const slots = await buildPublicParticipantSlots(db, tournament);
+        const slotsMerged = await enrichParticipantSlotsWithSeatingOnlyUsers(db, tournament, slots);
+        const slotsWithPlayers = slotsMerged.filter((s) => s.players && s.players.length > 0);
+        const png = await buildTournamentOgImageBuffer(slotsWithPlayers, club);
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=600, s-maxage=600');
+        return res.status(200).send(png);
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).end();
+    } finally {
+        await client.close(true);
+    }
+});
+
+/**
+ * HTML з og:* для краулерів (Telegram, Facebook, X). Редірект на фронт, якщо задано PUBLIC_SITE_URL.
+ * Шерити саме це посилання, якщо фронт — SPA без SSR.
+ */
+app.get('/public/tournament/:id/preview', async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(404).send('Not found');
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !isTournamentPubliclyViewable(tournament)) {
+            return res.status(404).send('Not found');
+        }
+        const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1, avatarUrl: 1 } });
+        const base = publicApiAbsoluteBase(req);
+        if (!base) {
+            return res
+                .status(500)
+                .type('text/plain')
+                .send('Set PUBLIC_API_BASE_URL so og:image is an absolute URL.');
+        }
+        const ogImage = `${base}/public/tournament/${tid.toString()}/og.png`;
+        const site = String(process.env.PUBLIC_SITE_URL || '').replace(/\/$/, '');
+        const target = site ? `${site}/tournaments/${tid.toString()}` : '';
+        const title = escapeHtmlAttr(tournament.name || 'Турнір');
+        const descRaw =
+            (tournament.publicDescription && String(tournament.publicDescription).trim()) ||
+            [club?.name, 'Nine or Ten'].filter(Boolean).join(' · ');
+        const desc = escapeHtmlAttr(descRaw.slice(0, 280));
+        const imgEsc = escapeHtmlAttr(ogImage);
+        const refreshUrlEsc = target ? target.replace(/"/g, '&quot;') : '';
+        const refresh = target ? `<meta http-equiv="refresh" content="0;url=${refreshUrlEsc}"/>` : '';
+        const ogUrlLine = target ? `<meta property="og:url" content="${escapeHtmlAttr(target)}"/>` : '';
+        const html = `<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${title}</title>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="${title}"/>
+<meta property="og:description" content="${desc}"/>
+${ogUrlLine}
+<meta property="og:image" content="${imgEsc}"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="${title}"/>
+<meta name="twitter:description" content="${desc}"/>
+<meta name="twitter:image" content="${imgEsc}"/>
+${refresh}
+</head>
+<body>
+<p>${target ? `<a href="${escapeHtmlAttr(target)}">Відкрити турнір</a>` : 'Додайте PUBLIC_SITE_URL у змінні середовища API для автоматичного переходу на сайт.'}</p>
+</body>
+</html>`;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=120, s-maxage=120');
+        return res.status(200).send(html);
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).send('Server error');
     } finally {
         await client.close(true);
     }

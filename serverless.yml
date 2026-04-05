@@ -19,7 +19,8 @@ build:
   esbuild:
     bundle: true
     minify: false
-    external: []
+    external:
+      - jimp
 
 plugins:
   - serverless-dotenv-plugin
@@ -34,6 +35,10 @@ provider:
     # Resend (forgot-password): set in .env / CI — не комітьте ключ у репозиторій
     RESEND_API_KEY: ${env:RESEND_API_KEY, ''}
     RESEND_FROM_EMAIL: ${env:RESEND_FROM_EMAIL, ''}
+    # Прев’ю лінків турніру: публічний URL фронту (редірект з /public/tournament/:id/preview)
+    PUBLIC_SITE_URL: ${env:PUBLIC_SITE_URL, ''}
+    # Якщо API за іншим доменом ніж Host у запиті — повний базовий URL без слешу на кінці
+    PUBLIC_API_BASE_URL: ${env:PUBLIC_API_BASE_URL, ''}
   iam:
     role:
       statements:

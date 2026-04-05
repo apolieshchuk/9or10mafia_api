@@ -1011,7 +1011,7 @@ app.post('/club/tournament/:id/complete', clubAuthMiddleware, async (req, res) =
         const winnerUserId = standings[0] ? parseObjectId(standings[0].userId) : null;
         await db.collection('tournaments').updateOne(
             { _id: tid },
-            { $set: { status: 'completed', winnerUserId, updatedAt: new Date() } }
+            { $set: { status: 'completed', winnerUserId, completedAt: new Date(), updatedAt: new Date() } }
         );
         return res.status(200).json({ data: 'Success' });
     } catch (e) {
@@ -1435,7 +1435,37 @@ app.get('/public/upcoming-tournaments', async (req, res) => {
             },
         ]);
         const items = await agg.toArray();
-        return res.status(200).json({ items });
+
+        const weekMs = 7 * 24 * 60 * 60 * 1000;
+        const completedSince = new Date(Date.now() - weekMs);
+        const completedCandidates = await db
+            .collection('tournaments')
+            .find({ status: 'completed', winnerUserId: { $ne: null } })
+            .sort({ completedAt: -1, updatedAt: -1 })
+            .limit(25)
+            .toArray();
+        let recentCompleted = null;
+        for (const t of completedCandidates) {
+            const endedAt = t.completedAt || t.updatedAt;
+            if (!endedAt || endedAt < completedSince) continue;
+            if (!isTournamentPubliclyViewable(t)) continue;
+            const woid = parseObjectId(t.winnerUserId);
+            if (!woid) continue;
+            const winner = await db.collection('users').findOne(
+                { _id: woid },
+                { projection: { nickname: 1, name: 1, avatarUrl: 1 } }
+            );
+            const winnerNickname = winner ? (winner.nickname || winner.name || '').trim() : '';
+            recentCompleted = {
+                id: t._id.toString(),
+                name: t.name || '',
+                winnerNickname: winnerNickname || 'Переможець',
+                winnerAvatarUrl: winner?.avatarUrl || null,
+            };
+            break;
+        }
+
+        return res.status(200).json({ items, recentCompleted });
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });

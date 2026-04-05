@@ -26,6 +26,31 @@ const {
     utcDateToVancouverYmd,
 } = require('./vancouverDate');
 
+/** YouTube / YouTube Music / short links only; порожній рядок = скинути кастомне посилання */
+function normalizeYoutubeUrlInput(raw) {
+    if (raw == null || typeof raw !== 'string') return '';
+    const s = raw.trim().slice(0, 512);
+    if (!s) return '';
+    let urlStr = s;
+    if (!/^https?:\/\//i.test(urlStr)) urlStr = `https://${urlStr}`;
+    let u;
+    try {
+        u = new URL(urlStr);
+    } catch {
+        return '';
+    }
+    const host = u.hostname.toLowerCase();
+    const hostNoWww = host.startsWith('www.') ? host.slice(4) : host;
+    const allowed =
+        hostNoWww === 'youtu.be' ||
+        hostNoWww === 'youtube.com' ||
+        hostNoWww === 'm.youtube.com' ||
+        hostNoWww === 'music.youtube.com' ||
+        hostNoWww.endsWith('.youtube.com');
+    if (!allowed) return '';
+    return u.href;
+}
+
 const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-west-2' });
 const S3_BUCKET = process.env.S3_BUCKET || 'mafia9or10-avatars';
 
@@ -850,7 +875,7 @@ app.post('/club/tournament', clubAuthMiddleware, async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
         const clubId = new ObjectId(req.user._id);
-        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf, publicDescription } = req.body;
+        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf, publicDescription, youtubeUrl } = req.body;
         if (!name || !numGames || numGames < 1) {
             return res.status(422).json({ error: 'name and numGames required' });
         }
@@ -862,6 +887,7 @@ app.post('/club/tournament', clubAuthMiddleware, async (req, res) => {
             status: 'draft',
             participants: normalizeParticipantUserIds(participants || []),
             publicDescription: typeof publicDescription === 'string' ? publicDescription.slice(0, 12000) : '',
+            youtubeUrl: normalizeYoutubeUrlInput(youtubeUrl),
             hideResultsAfterHalf: Boolean(hideResultsAfterHalf),
             seatingByGame: null,
             winnerUserId: null,
@@ -889,7 +915,7 @@ app.put('/club/tournament/:id', clubAuthMiddleware, async (req, res) => {
         }
         const maxIdx = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: -1 }).limit(1).toArray();
         const maxSaved = maxIdx[0]?.gameIndex || 0;
-        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf, publicDescription } = req.body;
+        const { name, numGames, scheduledDate, participants, hideResultsAfterHalf, publicDescription, youtubeUrl } = req.body;
         const update = { updatedAt: new Date() };
         if (name !== undefined) update.name = String(name);
         if (scheduledDate !== undefined) {
@@ -897,6 +923,9 @@ app.put('/club/tournament/:id', clubAuthMiddleware, async (req, res) => {
         }
         if (publicDescription !== undefined) {
             update.publicDescription = typeof publicDescription === 'string' ? publicDescription.slice(0, 12000) : '';
+        }
+        if (youtubeUrl !== undefined) {
+            update.youtubeUrl = normalizeYoutubeUrlInput(youtubeUrl);
         }
         if (hideResultsAfterHalf !== undefined) update.hideResultsAfterHalf = Boolean(hideResultsAfterHalf);
         if (participants !== undefined) update.participants = normalizeParticipantUserIds(participants);
@@ -1120,6 +1149,7 @@ function serializeTournamentRow(t, extra = {}) {
         hideResultsAfterHalf: t.hideResultsAfterHalf,
         winnerUserId: t.winnerUserId ? t.winnerUserId.toString() : null,
         publicDescription: t.publicDescription != null ? String(t.publicDescription) : '',
+        youtubeUrl: t.youtubeUrl != null && String(t.youtubeUrl).trim() ? String(t.youtubeUrl).trim() : '',
         participants: (t.participants || []).map((p) => ({
             userIds: (p.userIds || []).map((x) => x.toString()),
         })),
@@ -1419,6 +1449,9 @@ app.get('/public/tournament/:id', async (req, res) => {
             clubName: club?.name || '',
             clubAvatarUrl: club?.avatarUrl || null,
             publicDescription: tournament.publicDescription != null ? String(tournament.publicDescription) : '',
+            youtubeUrl: tournament.youtubeUrl != null && String(tournament.youtubeUrl).trim()
+                ? String(tournament.youtubeUrl).trim()
+                : '',
             participantSlots: slotsWithPlayers,
             seatingByGame: serializeSeatingByGameForPublic(tournament.seatingByGame),
             standingsRows,

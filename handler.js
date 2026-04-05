@@ -971,6 +971,58 @@ app.post('/club/tournament-game', clubAuthMiddleware, async (req, res) => {
     }
 });
 
+app.put('/club/tournament-game', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const clubId = new ObjectId(req.user._id);
+        const { tournamentId, gameIndex, players, winState, votings } = req.body;
+        const tid = parseObjectId(tournamentId);
+        const k = Number(gameIndex);
+        if (!tid || !k || k < 1) {
+            return res.status(422).json({ error: 'tournamentId and gameIndex required' });
+        }
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(clubId)) {
+            return res.status(404).json({ error: 'Tournament not found' });
+        }
+        if (tournament.status !== 'in_progress') {
+            return res.status(422).json({ error: 'Можна редагувати ігри лише поки турнір триває' });
+        }
+        if (k > tournament.numGames) {
+            return res.status(422).json({ error: 'gameIndex out of range' });
+        }
+        const existing = await db.collection('tournament_games').findOne({ tournament: tid, gameIndex: k });
+        if (!existing) {
+            return res.status(404).json({ error: 'Гру не знайдено' });
+        }
+        const bonusErr = assertTournamentGameBonusLimits(winState, players);
+        if (bonusErr) {
+            return res.status(422).json({ error: bonusErr });
+        }
+        await db.collection('tournament_games').updateOne(
+            { tournament: tid, gameIndex: k },
+            {
+                $set: {
+                    players: players.map((player) => ({
+                        ...player,
+                        role: normalizeRole(player.role),
+                        id: player.id && new ObjectId(player.id),
+                    })),
+                    winState,
+                    votings,
+                    updatedAt: new Date(),
+                },
+            }
+        );
+        return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
 function serializeTournamentRow(t, extra = {}) {
     return {
         id: t._id.toString(),

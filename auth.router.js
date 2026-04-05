@@ -4,11 +4,33 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 
-const ses = new SESClient({ region: process.env.AWS_REGION || 'us-west-2' });
-const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || 'noreply@9or10mafia.com';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://9or10mafia.com';
+const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
+
+async function sendPasswordResetEmailResend({ to, subject, html }) {
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+        throw new Error('RESEND_API_KEY is not configured');
+    }
+    const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: [to],
+            subject,
+            html,
+        }),
+    });
+    const bodyText = await res.text();
+    if (!res.ok) {
+        throw new Error(`Resend ${res.status}: ${bodyText}`);
+    }
+}
 
 const client = new MongoClient(process.env.MONGO_URL);
 let isConnected = false;
@@ -87,23 +109,19 @@ router.post('/forgot-password', async (req, res) => {
         );
 
         const resetLink = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
-        await ses.send(new SendEmailCommand({
-            Source: SES_FROM_EMAIL,
-            Destination: { ToAddresses: [email] },
-            Message: {
-                Subject: { Data: 'Відновлення паролю — 9or10 Mafia' },
-                Body: {
-                    Html: { Data: `
+        const html = `
                         <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
                             <h2 style="color:#1976d2">Відновлення паролю</h2>
                             <p>Ви отримали цей лист, тому що хтось запросив відновлення паролю для вашого облікового запису.</p>
                             <p><a href="${resetLink}" style="display:inline-block;padding:12px 24px;background:#1976d2;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold">Встановити новий пароль</a></p>
                             <p style="color:#888;font-size:13px">Посилання дійсне 1 годину. Якщо ви не запитували відновлення — проігноруйте цей лист.</p>
                         </div>
-                    ` },
-                },
-            },
-        }));
+                    `;
+        await sendPasswordResetEmailResend({
+            to: email,
+            subject: 'Відновлення паролю — 9or10 Mafia',
+            html,
+        });
 
         res.status(200).json({ message: 'ok' });
     } catch (e) {

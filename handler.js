@@ -23,6 +23,7 @@ const {
     vancouverTodayYmd,
     vancouverYmdToUtcDate,
     addDaysToYmd,
+    utcDateToVancouverYmd,
 } = require('./vancouverDate');
 
 const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-west-2' });
@@ -336,12 +337,18 @@ app.get("/club/last-game-players", clubAuthMiddleware, async (req, res, next) =>
     const { db, client } = await getMongoDataClient();
     try {
         const clubId = new ObjectId(req.user._id);
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const todayVancouver = vancouverTodayYmd();
         const lastGame = await db.collection('games').findOne(
-            { club: clubId, createdAt: { $gte: since } },
+            { club: clubId },
             { sort: { createdAt: -1 } }
         );
         if (!lastGame) return res.status(200).json({ players: [] });
+        const gameDay = lastGame.createdAt
+            ? utcDateToVancouverYmd(new Date(lastGame.createdAt))
+            : '';
+        if (!gameDay || gameDay !== todayVancouver) {
+            return res.status(200).json({ players: [] });
+        }
 
         const realPlayers = (lastGame.players || [])
             .filter(p => p.id)
@@ -671,6 +678,65 @@ function userInTournamentParticipants(userId, tournament) {
     return (tournament.participants || []).some((p) =>
         (p.userIds || []).some((x) => oidStr(x) === uid)
     );
+}
+
+/** Усі userId, що з’являються в розсадці хоча б в одній грі (основні + запасні за столом). */
+function userIdsInSeatingByGame(seatingByGame) {
+    const set = new Set();
+    if (!seatingByGame || typeof seatingByGame !== 'object') return set;
+    for (const seats of Object.values(seatingByGame)) {
+        if (!seats || typeof seats !== 'object') continue;
+        for (const cell of Object.values(seats)) {
+            if (!cell?.userIds) continue;
+            for (const oid of cell.userIds) {
+                const id = oidStr(oid);
+                if (id) set.add(id);
+            }
+        }
+    }
+    return set;
+}
+
+/** Підтримка / публічний список: учасник з анкети або лише в розсадці (наприклад опціональний партнер). */
+function userInTournamentCheerEligible(userId, tournament) {
+    if (userInTournamentParticipants(userId, tournament)) return true;
+    return userIdsInSeatingByGame(tournament.seatingByGame).has(oidStr(userId));
+}
+
+async function enrichParticipantSlotsWithSeatingOnlyUsers(db, tournament, slots) {
+    const present = new Set();
+    for (const s of slots) {
+        for (const p of s.players || []) {
+            if (p?.id) present.add(String(p.id));
+        }
+    }
+    const seatingIds = userIdsInSeatingByGame(tournament.seatingByGame);
+    const missing = [...seatingIds].filter((id) => !present.has(id));
+    if (!missing.length) return slots;
+    const oids = missing.map(parseObjectId).filter(Boolean);
+    const users = oids.length
+        ? await db
+              .collection('users')
+              .find({ _id: { $in: oids } }, { projection: { nickname: 1, name: 1, avatarUrl: 1 } })
+              .toArray()
+        : [];
+    const byId = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
+    let maxSeat = slots.reduce((m, s) => Math.max(m, Number(s.seatIndex) || 0), 0);
+    const extra = missing.map((id) => {
+        maxSeat += 1;
+        const u = byId[id];
+        return {
+            seatIndex: maxSeat,
+            players: [
+                {
+                    id,
+                    nickname: (u && (u.nickname || u.name)) || 'Учасник',
+                    avatarUrl: (u && u.avatarUrl) || null,
+                },
+            ],
+        };
+    });
+    return [...slots, ...extra];
 }
 
 async function canReadTournament(tournament, user) {
@@ -1291,7 +1357,8 @@ app.get('/public/tournament/:id', async (req, res) => {
         }
         const club = await db.collection('clubs').findOne({ _id: tournament.club }, { projection: { name: 1, avatarUrl: 1 } });
         const slots = await buildPublicParticipantSlots(db, tournament);
-        const slotsWithPlayers = slots.filter((s) => s.players && s.players.length > 0);
+        const slotsMerged = await enrichParticipantSlotsWithSeatingOnlyUsers(db, tournament, slots);
+        const slotsWithPlayers = slotsMerged.filter((s) => s.players && s.players.length > 0);
 
         const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
         const nextGameIndex = computeNextTournamentGameIndex(tournament, games);
@@ -1335,6 +1402,124 @@ app.get('/public/tournament/:id', async (req, res) => {
             seatingByGame: serializeSeatingByGameForPublic(tournament.seatingByGame),
             standingsRows,
         });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+/** Публічна стрічка підтримки учасників турніру (без авторизації). */
+app.get('/public/tournament/:id/cheers', async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !isTournamentPubliclyViewable(tournament)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const cheers = await db
+            .collection('tournament_cheers')
+            .find({ tournament: tid })
+            .sort({ createdAt: -1 })
+            .limit(400)
+            .toArray();
+        const userIds = new Set();
+        for (const c of cheers) {
+            userIds.add(oidStr(c.fromUser));
+            userIds.add(oidStr(c.toUser));
+        }
+        const oids = [...userIds].map(parseObjectId).filter(Boolean);
+        const users = oids.length
+            ? await db.collection('users').find({ _id: { $in: oids } }, { projection: { nickname: 1, name: 1, avatarUrl: 1 } }).toArray()
+            : [];
+        const byId = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
+        const foundUser = new Set(users.map((u) => u._id.toString()));
+        const missingClubOids = oids.filter((o) => !foundUser.has(o.toString()));
+        if (missingClubOids.length) {
+            const clubs = await db
+                .collection('clubs')
+                .find({ _id: { $in: missingClubOids } }, { projection: { nickname: 1, name: 1, avatarUrl: 1 } })
+                .toArray();
+            for (const c of clubs) {
+                byId[c._id.toString()] = c;
+            }
+        }
+        const nick = (id) => {
+            const u = byId[id];
+            return u ? u.nickname || u.name || id : id;
+        };
+        const av = (id) => (byId[id] && byId[id].avatarUrl) || null;
+        const items = cheers.map((c) => {
+            const fid = oidStr(c.fromUser);
+            const tidu = oidStr(c.toUser);
+            return {
+                id: c._id.toString(),
+                message: c.message,
+                createdAt: c.createdAt,
+                fromUser: { id: fid, nickname: nick(fid), avatarUrl: av(fid) },
+                toUser: { id: tidu, nickname: nick(tidu), avatarUrl: av(tidu) },
+            };
+        });
+        const countsByUserId = {};
+        for (const c of cheers) {
+            const k = oidStr(c.toUser);
+            countsByUserId[k] = (countsByUserId[k] || 0) + 1;
+        }
+        return res.status(200).json({ items, countsByUserId });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+/**
+ * Одна підтримка на акаунт (клуб або учасник) на турнір.
+ * Отримувач — у tournament.participants або в розсадці (seatingByGame); не можна підтримати себе.
+ */
+app.post('/tournament/:id/cheer', allAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        const { toUserId, message } = req.body || {};
+        const fromOid = parseObjectId(req.user._id);
+        const toOid = parseObjectId(toUserId);
+        if (!tid || !fromOid || !toOid) {
+            return res.status(422).json({ error: 'Некоректні дані' });
+        }
+        const msg = String(message || '').trim();
+        if (msg.length < 1) {
+            return res.status(422).json({ error: 'Напишіть коротке побажання' });
+        }
+        if (msg.length > 220) {
+            return res.status(422).json({ error: 'Повідомлення занадто довге (макс. 220 символів)' });
+        }
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || !isTournamentPubliclyViewable(tournament)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        if (!userInTournamentCheerEligible(toOid, tournament)) {
+            return res.status(422).json({ error: 'Цей гравець не в списку учасників турніру' });
+        }
+        if (oidStr(fromOid) === oidStr(toOid)) {
+            return res.status(422).json({ error: 'Не можна підтримати себе' });
+        }
+        const existing = await db.collection('tournament_cheers').findOne({ tournament: tid, fromUser: fromOid });
+        if (existing) {
+            return res.status(422).json({ error: 'Ви вже підтримали учасника в цьому турнірі' });
+        }
+        await db.collection('tournament_cheers').insertOne({
+            tournament: tid,
+            fromUser: fromOid,
+            toUser: toOid,
+            message: msg,
+            createdAt: new Date(),
+        });
+        return res.status(200).json({ data: 'ok' });
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });

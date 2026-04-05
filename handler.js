@@ -706,6 +706,30 @@ function gameShouldRedact(tournament, gameIndex) {
     return tournament.hideResultsAfterHalf && tournament.status !== 'completed' && gameIndex > half;
 }
 
+/** Найменший номер гри 1..numGames без збереженого результату (для «Діюча гра»). Індекси з БД нормалізуємо через Number. */
+function computeNextTournamentGameIndex(tournament, gamesDocs) {
+    if (!tournament || tournament.status !== 'in_progress') return null;
+    const numGames = Number(tournament.numGames) || 0;
+    if (numGames < 1) return null;
+    const saved = new Set(
+        (gamesDocs || [])
+            .map((g) => Number(g.gameIndex))
+            .filter((i) => Number.isFinite(i) && i >= 1)
+    );
+    if (saved.size >= numGames) return null;
+    for (let i = 1; i <= numGames; i++) {
+        if (!saved.has(i)) return i;
+    }
+    return null;
+}
+
+function normalizeSavedGameIndicesList(gamesDocs) {
+    return (gamesDocs || [])
+        .map((g) => Number(g.gameIndex))
+        .filter((i) => Number.isFinite(i) && i >= 1)
+        .sort((a, b) => a - b);
+}
+
 function aggregateTournamentStandings(games, tournament) {
     const stats = {};
     for (const game of games) {
@@ -1065,16 +1089,8 @@ app.get('/tournament/:id', allAuthMiddleware, async (req, res) => {
             return res.status(404).json({ error: 'Not found' });
         }
         const gamesSaved = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
-        const indices = gamesSaved.map((g) => g.gameIndex);
-        let nextGameIndex = null;
-        if (tournament.status === 'in_progress' && indices.length < tournament.numGames) {
-            for (let i = 1; i <= tournament.numGames; i++) {
-                if (!indices.includes(i)) {
-                    nextGameIndex = i;
-                    break;
-                }
-            }
-        }
+        const indices = normalizeSavedGameIndicesList(gamesSaved);
+        const nextGameIndex = computeNextTournamentGameIndex(tournament, gamesSaved);
         let winnerNickname = null;
         if (tournament.winnerUserId) {
             const u = await db.collection('users').findOne({ _id: tournament.winnerUserId }, { projection: { nickname: 1 } });
@@ -1226,16 +1242,7 @@ app.get('/public/tournament/:id', async (req, res) => {
         const slotsWithPlayers = slots.filter((s) => s.players && s.players.length > 0);
 
         const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
-        const savedGameIndices = games.map((g) => g.gameIndex);
-        let nextGameIndex = null;
-        if (tournament.status === 'in_progress' && savedGameIndices.length < tournament.numGames) {
-            for (let i = 1; i <= tournament.numGames; i++) {
-                if (!savedGameIndices.includes(i)) {
-                    nextGameIndex = i;
-                    break;
-                }
-            }
-        }
+        const nextGameIndex = computeNextTournamentGameIndex(tournament, games);
         const rawStandings = aggregateTournamentStandings(games, tournament);
         const standingIds = [...new Set(rawStandings.map((r) => r.userId))];
         const standingOids = standingIds.map(parseObjectId).filter(Boolean);

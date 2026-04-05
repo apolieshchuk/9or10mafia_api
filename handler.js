@@ -1697,6 +1697,7 @@ app.get('/public/tournament/:id/preview', async (req, res) => {
 <meta property="og:description" content="${desc}"/>
 ${ogUrlLine}
 <meta property="og:image" content="${imgEsc}"/>
+<meta property="og:image:type" content="image/png"/>
 <meta property="og:image:width" content="1200"/>
 <meta property="og:image:height" content="630"/>
 <meta name="twitter:card" content="summary_large_image"/>
@@ -1994,4 +1995,7 @@ function getLast12Months() {
     return [nums, names];
 }
 
-exports.handler = serverless(app);
+// Інакше PNG/JPEG тіло кодується як UTF-8 → зламаний og:image для WhatsApp / Telegram.
+exports.handler = serverless(app, {
+    binary: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+});

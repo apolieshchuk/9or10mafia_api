@@ -1273,6 +1273,7 @@ app.get('/public/tournament/:id', async (req, res) => {
             numGames: tournament.numGames,
             scheduledDate: tournament.scheduledDate,
             status: tournament.status,
+            hideResultsAfterHalf: Boolean(tournament.hideResultsAfterHalf),
             clubId: tournament.club ? tournament.club.toString() : null,
             nextGameIndex,
             clubName: club?.name || '',

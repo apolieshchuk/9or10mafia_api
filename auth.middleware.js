@@ -24,8 +24,21 @@ const allAuthMiddleware = function (req, res, next) {
     return authMiddleware(req, res, next, '*');
 };
 
+/** Для публічних GET: якщо є валідний Bearer — повертаємо payload, інакше null (без 401). */
+function tryOptionalAuthUser(req) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return null;
+    try {
+        return jwt.verify(token, 'supo-sect-ketyasdzaerfdsd');
+    } catch {
+        return null;
+    }
+}
+
 module.exports = {
     clubAuthMiddleware,
     userAuthMiddleware,
-    allAuthMiddleware
+    allAuthMiddleware,
+    tryOptionalAuthUser,
 }

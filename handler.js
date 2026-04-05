@@ -15,7 +15,7 @@ const app = express();
 const cors = require('cors')
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require("bcryptjs");
-const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware } = require('./auth.middleware');
+const { clubAuthMiddleware, userAuthMiddleware, allAuthMiddleware, tryOptionalAuthUser } = require('./auth.middleware');
 const jwt = require("jsonwebtoken");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const {
@@ -1428,8 +1428,10 @@ app.get('/public/tournament/:id/cheers', async (req, res) => {
             .toArray();
         const userIds = new Set();
         for (const c of cheers) {
-            userIds.add(oidStr(c.fromUser));
             userIds.add(oidStr(c.toUser));
+            if (c.anonymous === false) {
+                userIds.add(oidStr(c.fromUser));
+            }
         }
         const oids = [...userIds].map(parseObjectId).filter(Boolean);
         const users = oids.length
@@ -1455,20 +1457,32 @@ app.get('/public/tournament/:id/cheers', async (req, res) => {
         const items = cheers.map((c) => {
             const fid = oidStr(c.fromUser);
             const tidu = oidStr(c.toUser);
-            return {
+            const isAnon = c.anonymous !== false;
+            const row = {
                 id: c._id.toString(),
                 message: c.message,
                 createdAt: c.createdAt,
-                fromUser: { id: fid, nickname: nick(fid), avatarUrl: av(fid) },
+                anonymous: isAnon,
                 toUser: { id: tidu, nickname: nick(tidu), avatarUrl: av(tidu) },
             };
+            if (!isAnon) {
+                row.fromUser = { id: fid, nickname: nick(fid), avatarUrl: av(fid) };
+            } else {
+                row.fromUser = null;
+            }
+            return row;
         });
         const countsByUserId = {};
         for (const c of cheers) {
             const k = oidStr(c.toUser);
             countsByUserId[k] = (countsByUserId[k] || 0) + 1;
         }
-        return res.status(200).json({ items, countsByUserId });
+        const optionalViewer = tryOptionalAuthUser(req);
+        const viewerId = optionalViewer && optionalViewer._id != null ? oidStr(optionalViewer._id) : '';
+        const viewerHasCheered = Boolean(
+            viewerId && cheers.some((c) => oidStr(c.fromUser) === viewerId)
+        );
+        return res.status(200).json({ items, countsByUserId, viewerHasCheered });
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });
@@ -1485,9 +1499,10 @@ app.post('/tournament/:id/cheer', allAuthMiddleware, async (req, res) => {
     const { db, client } = await getMongoDataClient();
     try {
         const tid = parseObjectId(req.params.id);
-        const { toUserId, message } = req.body || {};
+        const { toUserId, message, anonymous } = req.body || {};
         const fromOid = parseObjectId(req.user._id);
         const toOid = parseObjectId(toUserId);
+        const isAnonymous = anonymous !== false;
         if (!tid || !fromOid || !toOid) {
             return res.status(422).json({ error: 'Некоректні дані' });
         }
@@ -1517,6 +1532,7 @@ app.post('/tournament/:id/cheer', allAuthMiddleware, async (req, res) => {
             fromUser: fromOid,
             toUser: toOid,
             message: msg,
+            anonymous: Boolean(isAnonymous),
             createdAt: new Date(),
         });
         return res.status(200).json({ data: 'ok' });

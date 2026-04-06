@@ -101,4 +101,57 @@ function seatingFromTournamentDocument(tournament) {
     return generateSeatingByGame(slots, numGames);
 }
 
-module.exports = { generateSeatingByGame, seatingFromTournamentDocument };
+function idStr(x) {
+    if (x == null) return '';
+    return x && typeof x.toString === 'function' ? x.toString() : String(x);
+}
+
+/** Та сама «група» за складом id (порядок у масиві не важливий). */
+function sameParticipantGroup(cellUserIds, rowUserIds) {
+    const a = new Set((cellUserIds || []).map(idStr));
+    const b = new Set((rowUserIds || []).map(idStr));
+    if (a.size !== b.size) return false;
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
+}
+
+/**
+ * Оновлює розсадку після зміни списку учасників: кожна комірка, що збігалася зі старим рядком i, отримує newParticipants[i].
+ * Один прохід по комірках — коректно для обміну місцями рядків.
+ * @param {Array<{ userIds?: unknown[] }>} oldParticipants документ з БД до оновлення
+ * @param {Array<{ userIds?: unknown[] }>} newParticipants після normalizeParticipantUserIds
+ * @param {object} seatingByGame
+ */
+function patchSeatingAfterParticipantUpdate(oldParticipants, newParticipants, seatingByGame) {
+    if (!seatingByGame || typeof seatingByGame !== 'object') return null;
+    const n = Math.min(oldParticipants.length, newParticipants.length);
+    const out = {};
+    for (const [gk, seats] of Object.entries(seatingByGame)) {
+        if (!seats || typeof seats !== 'object') {
+            out[gk] = seats;
+            continue;
+        }
+        out[gk] = {};
+        for (const [sk, cell] of Object.entries(seats)) {
+            const uids = cell && Array.isArray(cell.userIds) ? cell.userIds : [];
+            let next = uids.map(idStr);
+            for (let i = 0; i < n; i++) {
+                const oldRow = oldParticipants[i];
+                const newRow = newParticipants[i];
+                if (!oldRow || !newRow) continue;
+                if (sameParticipantGroup(uids, oldRow.userIds)) {
+                    next = (newRow.userIds || []).map(idStr);
+                    break;
+                }
+            }
+            out[gk][sk] = { userIds: next };
+        }
+    }
+    return out;
+}
+
+module.exports = {
+    generateSeatingByGame,
+    seatingFromTournamentDocument,
+    patchSeatingAfterParticipantUpdate,
+};

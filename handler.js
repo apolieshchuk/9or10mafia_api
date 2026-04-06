@@ -25,7 +25,7 @@ const {
     addDaysToYmd,
     utcDateToVancouverYmd,
 } = require('./vancouverDate');
-const { seatingFromTournamentDocument } = require('./seatingGenerate');
+const { seatingFromTournamentDocument, patchSeatingAfterParticipantUpdate } = require('./seatingGenerate');
 
 /** YouTube / YouTube Music / short links only; порожній рядок = скинути кастомне посилання */
 function normalizeYoutubeUrlInput(raw) {
@@ -947,7 +947,22 @@ app.put('/club/tournament/:id', clubAuthMiddleware, async (req, res) => {
             update.youtubeUrl = normalizeYoutubeUrlInput(youtubeUrl);
         }
         if (hideResultsAfterHalf !== undefined) update.hideResultsAfterHalf = Boolean(hideResultsAfterHalf);
-        if (participants !== undefined) update.participants = normalizeParticipantUserIds(participants);
+        if (participants !== undefined) {
+            const newParts = normalizeParticipantUserIds(participants);
+            update.participants = newParts;
+            const oldParts = tournament.participants || [];
+            if (tournament.seatingByGame && typeof tournament.seatingByGame === 'object') {
+                if (oldParts.length !== newParts.length) {
+                    update.seatingByGame = null;
+                } else {
+                    update.seatingByGame = patchSeatingAfterParticipantUpdate(
+                        oldParts,
+                        newParts,
+                        tournament.seatingByGame
+                    );
+                }
+            }
+        }
         if (numGames !== undefined) {
             const ng = Number(numGames);
             if (ng < maxSaved) {

@@ -52,16 +52,38 @@ const getMongoDataClient = async () => {
     return { db, client };
 }
 
+/** Trim + lowercase; порівняння з полем email у БД без урахування регістру ($expr). */
+function normalizeEmailForLookup(email) {
+    if (email == null || typeof email !== 'string') return '';
+    return email.trim().toLowerCase();
+}
+
+function activeUserByNormalizedEmailQuery(emailNorm) {
+    return {
+        active: true,
+        $expr: {
+            $eq: [
+                { $toLower: { $trim: { input: { $ifNull: ['$email', ''] } } } },
+                emailNorm,
+            ],
+        },
+    };
+}
+
 // User/Club Login
 router.post('/login', async (req, res) => {
     try {
         const { db } = await getMongoDataClient();
         const { email, password, authType } = req.body;
+        const emailNorm = normalizeEmailForLookup(email);
+        if (!emailNorm) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
         const col = authType === 'clubs' ? 'clubs' : 'users';
         const friendlyAuthType = authType === 'clubs' ? 'Клуб' : 'Учасник';
-        const user = await db.collection(col).findOne({ email, active: true }, {
+        const user = await db.collection(col).findOne(activeUserByNormalizedEmailQuery(emailNorm), {
             projection: { active: 0 },
-        })
+        });
         if (!user) {
             return res.status(401).json({ message: 'Unauthorized' });
         }
@@ -76,17 +98,20 @@ router.post('/login', async (req, res) => {
             expiresIn: '1w',
         });
 
-        res.status(200).json({ token });
+        return res.status(200).json({ token });
     } catch (e) {
-        console.error(e?.message)
+        console.error(e?.message);
+        return res.status(500).json({ message: 'Server error' });
     }
-    return 'Error';
 });
 
 async function findUserByEmail(db, email) {
-    const user = await db.collection('users').findOne({ email, active: true });
+    const emailNorm = normalizeEmailForLookup(email);
+    if (!emailNorm) return null;
+    const q = activeUserByNormalizedEmailQuery(emailNorm);
+    const user = await db.collection('users').findOne(q);
     if (user) return { user, collection: 'users' };
-    const club = await db.collection('clubs').findOne({ email, active: true });
+    const club = await db.collection('clubs').findOne(q);
     if (club) return { user: club, collection: 'clubs' };
     return null;
 }
@@ -95,7 +120,8 @@ router.post('/forgot-password', async (req, res) => {
     try {
         const { db } = await getMongoDataClient();
         const { email } = req.body;
-        if (!email) return res.status(422).json({ message: 'Email is required' });
+        const emailNorm = normalizeEmailForLookup(email);
+        if (!emailNorm) return res.status(422).json({ message: 'Email is required' });
 
         const found = await findUserByEmail(db, email);
         if (!found) return res.status(200).json({ message: 'ok' });
@@ -118,7 +144,7 @@ router.post('/forgot-password', async (req, res) => {
                         </div>
                     `;
         await sendPasswordResetEmailResend({
-            to: email,
+            to: found.user.email,
             subject: 'Відновлення паролю — 9or10 Mafia',
             html,
         });

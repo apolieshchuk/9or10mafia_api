@@ -25,6 +25,7 @@ const {
     addDaysToYmd,
     utcDateToVancouverYmd,
 } = require('./vancouverDate');
+const { seatingFromTournamentDocument } = require('./seatingGenerate');
 
 /** YouTube / YouTube Music / short links only; порожній рядок = скинути кастомне посилання */
 function normalizeYoutubeUrlInput(raw) {
@@ -1040,6 +1041,48 @@ app.put('/club/tournament/:id/seating', clubAuthMiddleware, async (req, res) => 
             { $set: { seatingByGame, updatedAt: new Date() } }
         );
         return res.status(200).json({ data: 'Success' });
+    } catch (e) {
+        console.error(e?.message);
+        return res.status(500).json({ error: 'Server Error' });
+    } finally {
+        await client.close(true);
+    }
+});
+
+/** Згенерувати розсадку і записати в турнір. Якщо в body є participants (10 рядків) — рахуємо з них (актуальна форма), інакше з БД. */
+app.post('/club/tournament/:id/seating/generate', clubAuthMiddleware, async (req, res) => {
+    const { db, client } = await getMongoDataClient();
+    try {
+        const tid = parseObjectId(req.params.id);
+        if (!tid) return res.status(422).json({ error: 'Invalid id' });
+        const tournament = await db.collection('tournaments').findOne({ _id: tid });
+        if (!tournament || oidStr(tournament.club) !== oidStr(req.user._id)) {
+            return res.status(404).json({ error: 'Not found' });
+        }
+        const bodyParts = req.body && Array.isArray(req.body.participants) ? req.body.participants : null;
+        let built;
+        if (bodyParts && bodyParts.length === 10) {
+            const normalized = bodyParts.map((p) => ({
+                userIds: (Array.isArray(p.userIds) ? p.userIds : []).map((x) => String(x)).filter(Boolean),
+            }));
+            if (normalized.some((s) => s.userIds.length < 1)) {
+                return res.status(422).json({ error: 'У кожному рядку має бути хоча б один учасник' });
+            }
+            built = seatingFromTournamentDocument({ ...tournament, participants: normalized });
+        } else {
+            built = seatingFromTournamentDocument(tournament);
+        }
+        if (built.error) {
+            return res.status(422).json({ error: built.error });
+        }
+        await db.collection('tournaments').updateOne(
+            { _id: tid },
+            { $set: { seatingByGame: built.seatingByGame, updatedAt: new Date() } }
+        );
+        return res.status(200).json({
+            data: 'Success',
+            relaxedConstraints: built.relaxedConstraints,
+        });
     } catch (e) {
         console.error(e?.message);
         return res.status(500).json({ error: 'Server Error' });

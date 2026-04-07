@@ -34,10 +34,17 @@ provider:
     # Resend (вимкнено в коді; лишайте порожнім або приберіть)
     # RESEND_API_KEY: ${env:RESEND_API_KEY, ''}
     # RESEND_FROM_EMAIL: ${env:RESEND_FROM_EMAIL, ''}
-    # Twilio SendGrid (forgot-password): https://app.sendgrid.com/settings/api_keys
-    SENDGRID_API_KEY: ${env:SENDGRID_API_KEY, ''}
-    SENDGRID_FROM_EMAIL: ${env:SENDGRID_FROM_EMAIL, ''}
-    SENDGRID_FROM_NAME: ${env:SENDGRID_FROM_NAME, '9or10 Mafia'}
+    # SendGrid (вимкнено в коді)
+    # SENDGRID_API_KEY: ${env:SENDGRID_API_KEY, ''}
+    # SENDGRID_FROM_EMAIL: ${env:SENDGRID_FROM_EMAIL, ''}
+    # SENDGRID_FROM_NAME: ${env:SENDGRID_FROM_NAME, '9or10 Mafia'}
+    # Mailtrap: https://mailtrap.io/api-tokens — transactional або sandbox inbox
+    MAILTRAP_API_TOKEN: ${env:MAILTRAP_API_TOKEN, ''}
+    MAILTRAP_API_KEY: ${env:MAILTRAP_API_KEY, ''}
+    MAILTRAP_FROM_EMAIL: ${env:MAILTRAP_FROM_EMAIL, ''}
+    MAILTRAP_FROM_NAME: ${env:MAILTRAP_FROM_NAME, '9or10 Mafia'}
+    MAILTRAP_USE_SANDBOX: ${env:MAILTRAP_USE_SANDBOX, ''}
+    MAILTRAP_INBOX_ID: ${env:MAILTRAP_INBOX_ID, ''}
   iam:
     role:
       statements:

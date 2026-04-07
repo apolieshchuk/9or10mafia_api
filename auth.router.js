@@ -35,7 +35,7 @@ async function sendPasswordResetEmailResend({ to, subject, html }) {
 }
 ——— */
 
-/** Twilio SendGrid: API key з https://app.sendgrid.com/settings/api_keys; from — верифікований Single Sender або домен. */
+/* ——— Twilio SendGrid (вимкнено; залишено для історії) ———
 const SENDGRID_FROM_EMAIL = (process.env.SENDGRID_FROM_EMAIL || '').trim();
 const SENDGRID_FROM_NAME = (process.env.SENDGRID_FROM_NAME || '9or10 Mafia').trim();
 
@@ -63,6 +63,61 @@ async function sendPasswordResetEmailSendGrid({ to, subject, html }) {
     if (!res.ok) {
         const bodyText = await res.text();
         throw new Error(`SendGrid ${res.status}: ${bodyText}`);
+    }
+}
+——— */
+
+/**
+ * Mailtrap: https://mailtrap.io/api-tokens
+ * Токен: MAILTRAP_API_TOKEN (або MAILTRAP_API_KEY).
+ * Відправка: transactional https://send.api.mailtrap.io/api/send (потрібен верифікований sending domain).
+ * Тестовий inbox: MAILTRAP_USE_SANDBOX=true + MAILTRAP_INBOX_ID → https://sandbox.api.mailtrap.io/api/send/{id}
+ */
+const MAILTRAP_FROM_EMAIL = (process.env.MAILTRAP_FROM_EMAIL || '').trim();
+const MAILTRAP_FROM_NAME = (process.env.MAILTRAP_FROM_NAME || '9or10 Mafia').trim();
+const MAILTRAP_USE_SANDBOX = String(process.env.MAILTRAP_USE_SANDBOX || '').toLowerCase() === 'true';
+const MAILTRAP_INBOX_ID = (process.env.MAILTRAP_INBOX_ID || '').trim();
+
+function getMailtrapSendUrl() {
+    if (MAILTRAP_USE_SANDBOX) {
+        if (!MAILTRAP_INBOX_ID) {
+            throw new Error('MAILTRAP_INBOX_ID is required when MAILTRAP_USE_SANDBOX=true');
+        }
+        return `https://sandbox.api.mailtrap.io/api/send/${encodeURIComponent(MAILTRAP_INBOX_ID)}`;
+    }
+    return 'https://send.api.mailtrap.io/api/send';
+}
+
+function mailtrapApiToken() {
+    return (process.env.MAILTRAP_API_TOKEN || process.env.MAILTRAP_API_KEY || '').trim();
+}
+
+async function sendPasswordResetEmailMailtrap({ to, subject, html }) {
+    const token = mailtrapApiToken();
+    if (!token) {
+        throw new Error('MAILTRAP_API_TOKEN (or MAILTRAP_API_KEY) is not configured');
+    }
+    if (!MAILTRAP_FROM_EMAIL) {
+        throw new Error('MAILTRAP_FROM_EMAIL is not configured');
+    }
+    const url = getMailtrapSendUrl();
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            from: { email: MAILTRAP_FROM_EMAIL, name: MAILTRAP_FROM_NAME },
+            to: [{ email: to }],
+            subject,
+            html,
+            category: 'password-reset',
+        }),
+    });
+    if (!res.ok) {
+        const bodyText = await res.text();
+        throw new Error(`Mailtrap ${res.status}: ${bodyText}`);
     }
 }
 
@@ -177,7 +232,7 @@ router.post('/forgot-password', async (req, res) => {
                             <p style="color:#888;font-size:13px">Посилання дійсне 1 годину. Якщо ви не запитували відновлення — проігноруйте цей лист.</p>
                         </div>
                     `;
-        await sendPasswordResetEmailSendGrid({
+        await sendPasswordResetEmailMailtrap({
             to: found.user.email,
             subject: 'Відновлення паролю — 9or10 Mafia',
             html,

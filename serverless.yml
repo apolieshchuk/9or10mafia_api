@@ -31,9 +31,13 @@ provider:
   region: us-west-2
   environment:
     S3_BUCKET: mafia9or10-avatars
-    # Resend (forgot-password): set in .env / CI — не комітьте ключ у репозиторій
-    RESEND_API_KEY: ${env:RESEND_API_KEY, ''}
-    RESEND_FROM_EMAIL: ${env:RESEND_FROM_EMAIL, ''}
+    # Resend (вимкнено в коді; лишайте порожнім або приберіть)
+    # RESEND_API_KEY: ${env:RESEND_API_KEY, ''}
+    # RESEND_FROM_EMAIL: ${env:RESEND_FROM_EMAIL, ''}
+    # Twilio SendGrid (forgot-password): https://app.sendgrid.com/settings/api_keys
+    SENDGRID_API_KEY: ${env:SENDGRID_API_KEY, ''}
+    SENDGRID_FROM_EMAIL: ${env:SENDGRID_FROM_EMAIL, ''}
+    SENDGRID_FROM_NAME: ${env:SENDGRID_FROM_NAME, '9or10 Mafia'}
   iam:
     role:
       statements:

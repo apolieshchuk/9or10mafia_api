@@ -6,6 +6,8 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://9or10mafia.com';
+
+/* ——— Resend (вимкнено; залишено для історії) ———
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
 
 async function sendPasswordResetEmailResend({ to, subject, html }) {
@@ -29,6 +31,38 @@ async function sendPasswordResetEmailResend({ to, subject, html }) {
     const bodyText = await res.text();
     if (!res.ok) {
         throw new Error(`Resend ${res.status}: ${bodyText}`);
+    }
+}
+——— */
+
+/** Twilio SendGrid: API key з https://app.sendgrid.com/settings/api_keys; from — верифікований Single Sender або домен. */
+const SENDGRID_FROM_EMAIL = (process.env.SENDGRID_FROM_EMAIL || '').trim();
+const SENDGRID_FROM_NAME = (process.env.SENDGRID_FROM_NAME || '9or10 Mafia').trim();
+
+async function sendPasswordResetEmailSendGrid({ to, subject, html }) {
+    const apiKey = process.env.SENDGRID_API_KEY;
+    if (!apiKey) {
+        throw new Error('SENDGRID_API_KEY is not configured');
+    }
+    if (!SENDGRID_FROM_EMAIL) {
+        throw new Error('SENDGRID_FROM_EMAIL is not configured');
+    }
+    const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            personalizations: [{ to: [{ email: to }] }],
+            from: { email: SENDGRID_FROM_EMAIL, name: SENDGRID_FROM_NAME },
+            subject,
+            content: [{ type: 'text/html', value: html }],
+        }),
+    });
+    if (!res.ok) {
+        const bodyText = await res.text();
+        throw new Error(`SendGrid ${res.status}: ${bodyText}`);
     }
 }
 
@@ -143,7 +177,7 @@ router.post('/forgot-password', async (req, res) => {
                             <p style="color:#888;font-size:13px">Посилання дійсне 1 годину. Якщо ви не запитували відновлення — проігноруйте цей лист.</p>
                         </div>
                     `;
-        await sendPasswordResetEmailResend({
+        await sendPasswordResetEmailSendGrid({
             to: found.user.email,
             subject: 'Відновлення паролю — 9or10 Mafia',
             html,

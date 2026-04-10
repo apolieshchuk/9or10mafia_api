@@ -1784,19 +1784,19 @@ function isWinner(player, game) {
     return game.winState === 'mafia' ? isMafia(player) : isGood(player);
 }
 
-/** Tournament judge bonus caps (must match frontend NewGame BONUS_TOURNAMENT_*). */
+/** Tournament judge bonus caps (must match frontend NewGame BONUS/PENALTY_TOURNAMENT_*). */
 function assertTournamentGameBonusLimits(winState, players) {
     const gameStub = { winState, players };
     for (const pl of players || []) {
         const raw = pl.bonusPoints;
         const b = typeof raw === 'number' && Number.isFinite(raw) ? raw : Number(raw);
         const bonus = Number.isFinite(b) ? b : 0;
-        if (bonus < 0) return 'Недопустиме значення бонусних балів';
+        const abs = Math.abs(bonus);
         const won = isWinner(pl, gameStub);
         if (won) {
-            if (bonus > 0.8) return 'Бонус переможців у турнірі не більше 0.8';
-        } else if (bonus > 0.5) {
-            return 'Бонус програвшої команди у турнірі не більше 0.5';
+            if (abs > 0.8) return 'Бонус/штраф переможців у турнірі не більше 0.8';
+        } else if (abs > 0.5) {
+            return 'Бонус/штраф програвшої команди у турнірі не більше 0.5';
         }
     }
     return null;

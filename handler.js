@@ -861,6 +861,20 @@ function normalizeSavedGameIndicesList(gamesDocs) {
         .sort((a, b) => a - b);
 }
 
+function buildTeamNicknameMap(participants, nickById) {
+    const map = {};
+    for (const slot of participants || []) {
+        const ids = (slot.userIds || []).map((id) => oidStr(id));
+        if (ids.length === 2 && ids[0] && ids[1]) {
+            const teamName = ids.map((id) => nickById[id] || '').filter(Boolean).join(' / ');
+            for (const id of ids) {
+                map[id] = teamName || nickById[id] || id;
+            }
+        }
+    }
+    return map;
+}
+
 function aggregateTournamentStandings(games, tournament) {
     const stats = {};
     for (const game of games) {
@@ -1336,15 +1350,21 @@ app.get('/tournaments', allAuthMiddleware, async (req, res) => {
                 return serializeTournamentRow(t, { gamesSaved: count });
             })
         );
+        const participantsByTid = Object.fromEntries(items.map((t) => [t._id.toString(), t.participants || []]));
+        const allParticipantIds = items.flatMap((t) => (t.participants || []).flatMap((s) => (s.userIds || []).map(oidStr))).filter(Boolean);
         const winnerOids = [...new Set(withCounts.map((t) => t.winnerUserId).filter(Boolean))].map(parseObjectId).filter(Boolean);
-        const winnerUsers = winnerOids.length
-            ? await db.collection('users').find({ _id: { $in: winnerOids } }, { projection: { nickname: 1 } }).toArray()
+        const allUserOids = [...new Set([...allParticipantIds, ...winnerOids.map(oidStr)])].map(parseObjectId).filter(Boolean);
+        const winnerUsers = allUserOids.length
+            ? await db.collection('users').find({ _id: { $in: allUserOids } }, { projection: { nickname: 1, name: 1 } }).toArray()
             : [];
-        const wnick = Object.fromEntries(winnerUsers.map((u) => [u._id.toString(), u.nickname || '']));
-        const enriched = withCounts.map((t) => ({
-            ...t,
-            winnerNickname: t.winnerUserId ? wnick[t.winnerUserId] || null : null,
-        }));
+        const wnick = Object.fromEntries(winnerUsers.map((u) => [u._id.toString(), u.nickname || u.name || '']));
+        const enriched = withCounts.map((t) => {
+            const teamMap = buildTeamNicknameMap(participantsByTid[t.id], wnick);
+            return {
+                ...t,
+                winnerNickname: t.winnerUserId ? teamMap[t.winnerUserId] || wnick[t.winnerUserId] || null : null,
+            };
+        });
         return res.status(200).json({ items: enriched });
     } catch (e) {
         console.error(e?.message);
@@ -1368,8 +1388,14 @@ app.get('/tournament/:id', allAuthMiddleware, async (req, res) => {
         const nextGameIndex = computeNextTournamentGameIndex(tournament, gamesSaved);
         let winnerNickname = null;
         if (tournament.winnerUserId) {
-            const u = await db.collection('users').findOne({ _id: tournament.winnerUserId }, { projection: { nickname: 1 } });
-            winnerNickname = u?.nickname || null;
+            const wid = oidStr(tournament.winnerUserId);
+            const participantIds = (tournament.participants || []).flatMap((s) => (s.userIds || []).map(oidStr)).filter(Boolean);
+            const allIds = [...new Set([wid, ...participantIds])];
+            const oids = allIds.map(parseObjectId).filter(Boolean);
+            const users = await db.collection('users').find({ _id: { $in: oids } }, { projection: { nickname: 1, name: 1 } }).toArray();
+            const nickById = Object.fromEntries(users.map((u) => [u._id.toString(), u.nickname || u.name || '']));
+            const teamMap = buildTeamNicknameMap(tournament.participants, nickById);
+            winnerNickname = teamMap[wid] || nickById[wid] || null;
         }
         return res.status(200).json({
             ...serializeTournamentRow(tournament),
@@ -1436,14 +1462,16 @@ app.get('/tournament/:id/standings', allAuthMiddleware, async (req, res) => {
         }
         const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
         const raw = aggregateTournamentStandings(games, tournament);
-        const userIds = [...new Set(raw.map((r) => r.userId))];
-        const oids = userIds.map((id) => parseObjectId(id)).filter(Boolean);
+        const participantIds = (tournament.participants || []).flatMap((s) => (s.userIds || []).map(oidStr)).filter(Boolean);
+        const allIds = [...new Set([...raw.map((r) => r.userId), ...participantIds])];
+        const oids = allIds.map((id) => parseObjectId(id)).filter(Boolean);
         const users = await db.collection('users').find({ _id: { $in: oids } }).toArray();
         const nickById = Object.fromEntries(users.map((u) => [u._id.toString(), u.nickname || u.name || '']));
+        const teamMap = buildTeamNicknameMap(tournament.participants, nickById);
         const rows = raw
             .map((r) => ({
                 ...r,
-                nickname: nickById[r.userId] || r.userId,
+                nickname: teamMap[r.userId] || nickById[r.userId] || r.userId,
             }))
             .sort((a, b) => b.total - a.total)
             .map((r, i) => ({ ...r, rank: i + 1 }));
@@ -1509,11 +1537,18 @@ app.get('/public/upcoming-tournaments', async (req, res) => {
             if (!isTournamentPubliclyViewable(t)) continue;
             const woid = parseObjectId(t.winnerUserId);
             if (!woid) continue;
-            const winner = await db.collection('users').findOne(
-                { _id: woid },
+            const participantIds = (t.participants || []).flatMap((s) => (s.userIds || []).map(oidStr)).filter(Boolean);
+            const allIds = [...new Set([oidStr(woid), ...participantIds])];
+            const allOids = allIds.map(parseObjectId).filter(Boolean);
+            const bannerUsers = await db.collection('users').find(
+                { _id: { $in: allOids } },
                 { projection: { nickname: 1, name: 1, avatarUrl: 1 } }
-            );
-            const winnerNickname = winner ? (winner.nickname || winner.name || '').trim() : '';
+            ).toArray();
+            const bannerNickById = Object.fromEntries(bannerUsers.map((u) => [u._id.toString(), u.nickname || u.name || '']));
+            const bannerTeamMap = buildTeamNicknameMap(t.participants, bannerNickById);
+            const wid = oidStr(woid);
+            const winner = bannerUsers.find((u) => u._id.toString() === wid);
+            const winnerNickname = (bannerTeamMap[wid] || bannerNickById[wid] || '').trim();
             recentCompleted = {
                 id: t._id.toString(),
                 name: t.name || '',
@@ -1550,18 +1585,21 @@ app.get('/public/tournament/:id', async (req, res) => {
         const games = await db.collection('tournament_games').find({ tournament: tid }).sort({ gameIndex: 1 }).toArray();
         const nextGameIndex = computeNextTournamentGameIndex(tournament, games);
         const rawStandings = aggregateTournamentStandings(games, tournament);
-        const standingIds = [...new Set(rawStandings.map((r) => r.userId))];
+        const participantIds = (tournament.participants || []).flatMap((s) => (s.userIds || []).map(oidStr)).filter(Boolean);
+        const standingIds = [...new Set([...rawStandings.map((r) => r.userId), ...participantIds])];
         const standingOids = standingIds.map(parseObjectId).filter(Boolean);
         const standingUsers = standingOids.length
             ? await db.collection('users').find({ _id: { $in: standingOids } }, { projection: { nickname: 1, name: 1, avatarUrl: 1 } }).toArray()
             : [];
         const standingById = Object.fromEntries(standingUsers.map((u) => [u._id.toString(), u]));
+        const nickById = Object.fromEntries(standingUsers.map((u) => [u._id.toString(), u.nickname || u.name || '']));
+        const teamMap = buildTeamNicknameMap(tournament.participants, nickById);
         const standingsRows = rawStandings
             .map((r) => {
                 const u = standingById[r.userId];
                 return {
                     userId: r.userId,
-                    nickname: u ? (u.nickname || u.name || '') : r.userId,
+                    nickname: teamMap[r.userId] || (u ? (u.nickname || u.name || '') : r.userId),
                     avatarUrl: u?.avatarUrl || null,
                     pointsSum: r.pointsSum,
                     supportFiveSum: r.supportFiveSum,

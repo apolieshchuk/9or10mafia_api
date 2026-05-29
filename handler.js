@@ -60,19 +60,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
     if (req.body && req.body.type === 'Buffer' && Array.isArray(req.body.data)) {
-        try {
-            req.body = JSON.parse(Buffer.from(req.body.data).toString());
-            console.log('[BUFFER-FIX] decoded body:', JSON.stringify(req.body));
-        } catch (e) {
-            console.log('[BUFFER-FIX] decode failed:', e.message);
-        }
+        try { req.body = JSON.parse(Buffer.from(req.body.data).toString()); } catch {}
     } else if (Buffer.isBuffer(req.body)) {
-        try {
-            req.body = JSON.parse(req.body.toString());
-            console.log('[BUFFER-FIX] raw Buffer decoded:', JSON.stringify(req.body));
-        } catch (e) {
-            console.log('[BUFFER-FIX] raw Buffer decode failed:', e.message);
-        }
+        try { req.body = JSON.parse(req.body.toString()); } catch {}
     }
     next();
 });

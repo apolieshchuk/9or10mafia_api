@@ -79,14 +79,20 @@ app.use(express.urlencoded({ extended: true })); // to support URL-encoded bodie
 //     return client;
 // }
 
+let _cachedClient = null;
 const getMongoDataClient = async () => {
-    const client = new MongoClient(process.env.MONGO_URL);
+    if (_cachedClient && _cachedClient.topology?.isConnected?.()) {
+        return { db: _cachedClient.db('mafia9or10'), client: { close: () => {} } };
+    }
+    const client = new MongoClient(process.env.MONGO_URL, {
+        maxPoolSize: 10,
+        minPoolSize: 1,
+        serverSelectionTimeoutMS: 10000,
+        connectTimeoutMS: 10000,
+    });
     await client.connect();
-    const db = client.db('mafia9or10');
-    // db.collection('clubs').createIndex({ email: 1 }, { unique: true });
-    // db.collection('clubs').createIndex({ name: 1 }, { unique: true });
-    // db.collection('users').createIndex({ email: 1 }, { unique: true });
-    return { db, client };
+    _cachedClient = client;
+    return { db: client.db('mafia9or10'), client: { close: () => {} } };
 }
 
 app.use('/auth', require('./auth.router'));
@@ -120,6 +126,9 @@ app.post("/club/rating", async (req, res, next) => {
     try {
         const clubId = new ObjectId(req.body.clubId);
         const latestRatingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
+        if (!latestRatingPeriod) {
+            return res.status(200).json({ players: [], stats: {} });
+        }
         const [yearStats, periodStats] = await calculateTotalGamesInfo(db, clubId, latestRatingPeriod);
 
         const users = await db.collection('games').aggregate([

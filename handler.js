@@ -1911,6 +1911,7 @@ function getLast12Months() {
     const nums = [];
     const names = [];
     const date = new Date();
+    date.setDate(1);
 
     for (let i = 0; i < 12; i++) {
         names.unshift(monthNames[date.getMonth() + 1]);

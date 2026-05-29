@@ -57,7 +57,25 @@ const S3_BUCKET = process.env.S3_BUCKET || 'mafia9or10-avatars';
 
 app.use(cors())
 app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true })); // to support URL-encoded bodies
+app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => {
+    if (req.body && req.body.type === 'Buffer' && Array.isArray(req.body.data)) {
+        try {
+            req.body = JSON.parse(Buffer.from(req.body.data).toString());
+            console.log('[BUFFER-FIX] decoded body:', JSON.stringify(req.body));
+        } catch (e) {
+            console.log('[BUFFER-FIX] decode failed:', e.message);
+        }
+    } else if (Buffer.isBuffer(req.body)) {
+        try {
+            req.body = JSON.parse(req.body.toString());
+            console.log('[BUFFER-FIX] raw Buffer decoded:', JSON.stringify(req.body));
+        } catch (e) {
+            console.log('[BUFFER-FIX] raw Buffer decode failed:', e.message);
+        }
+    }
+    next();
+});
 // app.use(cors({
 //   // origin: `https://admin.${process.env.ENV}.usgua.click`,
 //   origin: `*`,
@@ -79,20 +97,11 @@ app.use(express.urlencoded({ extended: true })); // to support URL-encoded bodie
 //     return client;
 // }
 
-let _cachedClient = null;
 const getMongoDataClient = async () => {
-    if (_cachedClient && _cachedClient.topology?.isConnected?.()) {
-        return { db: _cachedClient.db('mafia9or10'), client: { close: () => {} } };
-    }
-    const client = new MongoClient(process.env.MONGO_URL, {
-        maxPoolSize: 10,
-        minPoolSize: 1,
-        serverSelectionTimeoutMS: 10000,
-        connectTimeoutMS: 10000,
-    });
+    const client = new MongoClient(process.env.MONGO_URL);
     await client.connect();
-    _cachedClient = client;
-    return { db: client.db('mafia9or10'), client: { close: () => {} } };
+    const db = client.db('mafia9or10');
+    return { db, client };
 }
 
 app.use('/auth', require('./auth.router'));
@@ -124,8 +133,12 @@ app.post("/club", async (req, res, next) => {
 app.post("/club/rating", async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {
-        const clubId = new ObjectId(req.body.clubId);
+        const rawClubId = req.body.clubId;
+        console.log('[DEBUG /club/rating] rawClubId:', rawClubId, 'type:', typeof rawClubId, 'body:', JSON.stringify(req.body));
+        const clubId = new ObjectId(rawClubId);
+        console.log('[DEBUG /club/rating] clubId ObjectId:', clubId.toString());
         const latestRatingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
+        console.log('[DEBUG /club/rating] latestRatingPeriod:', latestRatingPeriod ? latestRatingPeriod._id.toString() : 'NULL');
         if (!latestRatingPeriod) {
             return res.status(200).json({ players: [], stats: {} });
         }
@@ -558,9 +571,10 @@ app.get("/users", async (req, res, next) => {
             items: users,
         });
     } catch (e) {
-        console.error(e?.message)
+        console.error(e?.stack || e?.message);
         return res.status(500).json({
             error: 'Server Error',
+            _debug: String(e?.stack || e?.message || e),
         });
     } finally {
         await client.close(true);

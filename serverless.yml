@@ -27,7 +27,7 @@ plugins:
 
 provider:
   name: aws
-  runtime: nodejs20.x
+  runtime: nodejs22.x
   region: us-west-2
   environment:
     S3_BUCKET: mafia9or10-avatars

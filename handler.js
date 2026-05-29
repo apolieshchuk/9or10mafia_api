@@ -133,12 +133,8 @@ app.post("/club", async (req, res, next) => {
 app.post("/club/rating", async (req, res, next) => {
     const { db, client } = await getMongoDataClient();
     try {
-        const rawClubId = req.body.clubId;
-        console.log('[DEBUG /club/rating] rawClubId:', rawClubId, 'type:', typeof rawClubId, 'body:', JSON.stringify(req.body));
-        const clubId = new ObjectId(rawClubId);
-        console.log('[DEBUG /club/rating] clubId ObjectId:', clubId.toString());
+        const clubId = new ObjectId(req.body.clubId);
         const latestRatingPeriod = await db.collection('rating_periods').findOne({ club: clubId }, { sort: { _id: -1 } });
-        console.log('[DEBUG /club/rating] latestRatingPeriod:', latestRatingPeriod ? latestRatingPeriod._id.toString() : 'NULL');
         if (!latestRatingPeriod) {
             return res.status(200).json({ players: [], stats: {} });
         }
@@ -289,7 +285,7 @@ const calculateTotalGamesInfo = async (db, clubId, latestRatingPeriod) => {
     let tgInPeriod = 0;
     for await (let game of gamesTotal1Year) {
         const mnth = game.createdAt.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }).split('/')[0];
-        const current = yearStats.get(Number(mnth));
+        const current = yearStats.get(Number(mnth)) || { ...defaultTotalStats, name: '' };
         const newMnth = {
             ...current,
             totalGames: current.totalGames + 1,
